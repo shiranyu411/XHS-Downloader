@@ -9,3 +9,7 @@ __pycache__/
 /build/
 /dist/
 /output/
+/.collection-chrome/
+/.collection-ui.json
+/collections/
+/.pytest_cache/

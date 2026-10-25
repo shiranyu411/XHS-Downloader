@@ -8,7 +8,7 @@
     const toastRegion = document.getElementById("toastRegion");
     const startupScreen = document.getElementById("startupScreen");
 
-    const viewNames = new Set(["new_task", "monitor", "queue", "history", "logs", "settings", "disclaimer", "about"]);
+    const viewNames = new Set(["collection", "new_task", "monitor", "queue", "history", "logs", "settings", "disclaimer", "about"]);
 
     let uiTranslations = Object.create(null);
     let translatedUiInitialized = false;
@@ -816,7 +816,7 @@
         renderMonitorState(monitorMode);
         if (!translatedUiInitialized) {
             const initialView = window.location.hash.slice(1);
-            setView(viewNames.has(initialView) ? initialView : "new_task");
+            setView(viewNames.has(initialView) ? initialView : "collection");
             translatedUiInitialized = true;
         }
     }
@@ -1201,6 +1201,7 @@
     function applyNativeState(state) {
         // 应用一次完整状态快照；仅在 revision 变化时重新查询下载记录数据库。
         renderNativeTaskLists(state.tasks, state.files);
+        window.XHSCollection.render(state.collection);
         const enabled = Boolean(state.history_enabled);
         const revision = Number(state.history_revision);
         const shouldRefreshHistory = enabled && (lastHistoryRevision !== revision || !historyEnabled);
@@ -1394,6 +1395,7 @@
     function connectNativeBridge() {
         // pywebviewready 触发后先加载语言包；未同意免责声明时不进入状态轮询。
         nativeApi = window.pywebview.api;
+        window.XHSCollection.connect(nativeApi, showToast);
         void (async () => {
             await refreshUiTranslations();
             startupScreen.hidden = true;

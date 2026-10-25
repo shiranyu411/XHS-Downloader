@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light">
-    <title>XHS-Downloader</title>
+    <title>XHS-Downloader · 采集工作台</title>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <link rel="preload" as="style" href="https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-sc@5.3.0/400.css">
     <link rel="preload" as="style" href="https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-sc@5.3.0/600.css">
@@ -21,9 +21,11 @@
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-sc@5.3.0/700.css">
     </noscript>
     <link rel="stylesheet" href="./styles.css">
+    <link rel="stylesheet" href="./collection.css">
 </head>
 <body>
 <svg class="icon-sprite">
+    <symbol id="layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></symbol>
     <symbol id="plus" viewBox="0 0 24 24">
         <path d="M5 12h14M12 5v14"/>
     </symbol>
@@ -107,7 +109,10 @@
         </div>
 
         <nav class="primary-nav">
-            <button class="nav-item active" type="button" data-view="new_task">
+            <button class="nav-item active" type="button" data-view="collection">
+                <svg><use href="#layers"/></svg><span data-i18n="nav.collection">采集工作台</span>
+            </button>
+            <button class="nav-item" type="button" data-view="new_task">
                 <svg>
                     <use href="#plus"/>
                 </svg>
@@ -175,7 +180,76 @@
         </header>
 
         <main class="content" id="mainContent">
-            <section class="view active" data-page="new_task">
+            <section class="view collection-view active" data-page="collection" aria-label="采集工作台">
+                <div class="collect-heading">
+                    <div><span class="collect-eyebrow">LOCAL ARCHIVE / 原始数据</span><h2>正文与评论，一站采集。</h2><p>沿用你的浏览器会话，保存原始响应、真实 ID 和回复关系。</p></div>
+                    <span class="collect-tag">本地保存 · 可恢复</span>
+                </div>
+                <section class="collect-card collect-browser" aria-labelledby="collectBrowserTitle">
+                    <div class="collect-browser-top">
+                        <div class="collect-card-title"><span class="collect-step">1</span><div><h3 id="collectBrowserTitle">连接专用浏览器</h3><p id="collectConnectionMessage" role="status">打开 Chrome，手动登录一次即可开始。</p></div></div>
+                        <div class="collect-actions"><button type="button" class="secondary-button" id="collectCheck">刷新连接</button><button type="button" class="primary-button" id="collectBrowser">打开浏览器 <svg><use href="#external"/></svg></button></div>
+                    </div>
+                    <div class="collect-browser-bottom">
+                        <div class="collect-statuses"><span class="collect-pill" id="collectCdpStatus">连接待检查</span><span class="collect-pill" id="collectLoginStatus">登录待检查</span><span class="collect-pill" id="collectAdapterStatus">请求模块待检查</span></div>
+                        <div class="collect-search"><label class="sr-only" for="collectKeyword">搜索关键词</label><input id="collectKeyword" placeholder="搜索关键词，例如 Keep4o" maxlength="100"><button type="button" class="secondary-button" id="collectSearch">搜索</button></div>
+                    </div>
+                    <details class="collect-connection-options"><summary>连接设置 <span id="collectCheckedAt"></span></summary><label for="collectEndpoint">本机浏览器地址</label><input id="collectEndpoint" value="http://127.0.0.1:9223" spellcheck="false"><p>普通 Chrome 的端口可能不可用；“打开浏览器”使用独立配置，不复制日常浏览器的 Cookie。</p></details>
+                </section>
+                <div class="collect-layout">
+                    <section class="collect-card collect-setup" aria-labelledby="collectSetupTitle">
+                        <div class="collect-card-title"><span class="collect-step">2</span><div><h3 id="collectSetupTitle">准备采集批次</h3><p>每个批次独立存档，原有数据不会覆盖。</p></div></div>
+                        <div class="collect-tabs" role="tablist" aria-label="批次来源"><button type="button" id="collectNewTab" role="tab" aria-selected="true" aria-controls="collectNewPanel">新建批次</button><button type="button" id="collectExistingTab" role="tab" aria-selected="false" aria-controls="collectExistingPanel">打开已有</button></div>
+                        <form id="collectCreateForm">
+                            <fieldset id="collectNewPanel" role="tabpanel" aria-labelledby="collectNewTab">
+                                <label class="collect-field" for="collectName">批次名称<input id="collectName" maxlength="80" placeholder="例如 Keep4o-首次试采" autocomplete="off"></label>
+                                <label class="collect-field" for="collectSource">从哪里采集<select id="collectSource"><option value="search">当前浏览器的搜索结果页</option><option value="links">粘贴完整笔记链接</option></select></label>
+                                <p class="collect-help" id="collectSourceHint">先在浏览器选好排序和筛选。自动滚动后，采集本次实际发现的笔记。</p>
+                                <div id="collectLinksArea" hidden><label class="collect-field" for="collectLinks">笔记链接<textarea id="collectLinks" rows="5" placeholder="https://www.xiaohongshu.com/explore/…&#10;每行一条，保留原有访问参数" spellcheck="false"></textarea></label><button class="collect-text-button" type="button" id="collectPaste">从剪贴板粘贴</button></div>
+                                <details class="collect-advanced"><summary>高级设置 <span>间隔 20 秒 · 默认不下载媒体</span></summary>
+                                    <div class="collect-fields-grid">
+                                        <label class="collect-field" for="collectInterval">打开间隔 / 秒<input id="collectInterval" type="number" min="0" max="86400" step="1" value="20" required></label>
+                                        <label class="collect-field" for="collectScrolls">搜索滚动次数<input id="collectScrolls" type="number" min="0" max="86400" step="1" value="50" required></label>
+                                        <label class="collect-field" for="collectTimeout">单篇预算 / 秒<input id="collectTimeout" type="number" min="1" max="86400" step="1" value="900" required></label>
+                                        <label class="collect-field" for="collectOpTimeout">单页等待 / 秒<input id="collectOpTimeout" type="number" min="1" max="86400" step="1" value="15" required></label>
+                                    </div>
+                                    <label class="collect-field" for="collectStrategy">评论获取方式<select id="collectStrategy"><option value="auto">自动选择（推荐）</option><option value="request">仅网页请求 · 适配验证</option><option value="ui">仅页面滚动 / 展开</option></select></label>
+                                    <label class="collect-field" for="collectOperations">单篇最大操作数<input id="collectOperations" type="number" min="1" max="86400" step="1" value="500" required></label>
+                                    <label class="collect-checkbox"><input type="checkbox" id="collectMedia"> 同时下载图片 / 视频</label>
+                                    <p class="collect-help">不设前 20 / 50 条评论截断。达到时间或操作预算会标记“不完整”，而不是“已采全”。</p>
+                                    <label class="collect-field" for="collectOutput">保存位置<div class="collect-path-field"><input id="collectOutput" spellcheck="false"><button type="button" class="secondary-button" id="collectBrowseOutput" aria-label="选择保存位置">选择</button></div></label>
+                                </details>
+                                <button type="submit" class="primary-button collect-create" id="collectCreate" disabled><svg><use href="#play"/></svg>创建并开始采集</button>
+                                <p class="collect-help" id="collectStartHint">请先连接浏览器并完成登录。</p>
+                            </fieldset>
+                        </form>
+                        <div id="collectExistingPanel" role="tabpanel" aria-labelledby="collectExistingTab" hidden>
+                            <label class="collect-field" for="collectBatchSelect">最近的批次<select id="collectBatchSelect"><option value="">还没有已保存的批次</option></select></label>
+                            <div class="collect-actions"><button type="button" class="primary-button" id="collectLoad">打开批次</button><button type="button" class="secondary-button" id="collectRefreshBatches">刷新列表</button></div>
+                            <button type="button" class="collect-text-button" id="collectBrowseBatch">选择其他批次文件夹…</button>
+                            <div class="collect-notice">打开后沿用原批次参数。未完成笔记会建立新尝试重新遍历，保留历史数据；不会把不同时间的观察拼成“完整”。</div>
+                        </div>
+                    </section>
+                    <section class="collect-card collect-dashboard" aria-labelledby="collectBatchTitle">
+                        <div class="collect-dashboard-head"><div><span class="collect-eyebrow">CURRENT BATCH / 当前批次</span><h3 id="collectBatchTitle">等待第一份采集</h3></div><span class="collect-pill" id="collectPhase">未开始</span></div>
+                        <p class="collect-batch-path" id="collectBatchPath">创建或打开一个批次，进度与结果会显示在这里。</p>
+                        <div class="collect-metrics"><div><span>发现笔记</span><strong id="collectTotal">0</strong></div><div class="collect-metric-good"><span>完整完成</span><strong id="collectComplete">0</strong></div><div class="collect-metric-warn"><span>需补采</span><strong id="collectPartial">0</strong></div><div><span>待处理</span><strong id="collectPending">0</strong></div></div>
+                        <div class="collect-progress-caption"><span id="collectProgressText">尚未开始</span><span id="collectUnavailable"></span></div>
+                        <progress id="collectProgress" max="1" value="0" aria-label="已处理笔记进度"></progress>
+                        <div class="collect-live" aria-live="polite"><span class="collect-live-dot" id="collectLiveDot"></span><div><strong id="collectMessage">准备好后，从左侧创建采集批次。</strong><p id="collectPageProgress">原始响应先保存，确认成功后再进入下一页。</p></div></div>
+                        <div class="collect-run-actions"><button type="button" class="primary-button" id="collectResume" disabled><svg><use href="#play"/></svg>继续未完成</button><button type="button" class="secondary-button" id="collectPause" disabled>安全暂停</button><button type="button" class="secondary-button" id="collectRetry" disabled>补采不完整</button></div>
+                        <div class="collect-secondary-actions"><button type="button" class="collect-text-button" id="collectDiscover" disabled>追加当前搜索页</button><button type="button" class="collect-text-button" id="collectFolder" disabled>打开数据目录 ↗</button><button type="button" class="collect-text-button" id="collectExport" disabled>导出结果表</button></div>
+                        <p class="collect-help" id="collectSavedConfig"></p>
+                        <details class="collect-log"><summary>运行记录 <span>仅本地状态，不展示会话凭证</span></summary><ol id="collectLogList"><li>尚无运行记录</li></ol></details>
+                    </section>
+                </div>
+                <section class="collect-card collect-results" aria-labelledby="collectResultsTitle">
+                    <div class="collect-results-head"><div><h3 id="collectResultsTitle">逐篇结果</h3><p>“已处理”不等于“采全”。完整状态只代表本次可见分页已遍历结束。</p></div><label class="collect-filter" for="collectFilter">筛选<select id="collectFilter"><option value="all">全部结果</option><option value="attention">需要关注</option><option value="complete">完整完成</option><option value="pending">待处理 / 采集中</option></select></label></div>
+                    <div class="collect-table-wrap"><table class="collect-table"><thead><tr><th>笔记 ID</th><th>正文</th><th>评论</th><th>媒体</th><th>状态 / 停止原因</th></tr></thead><tbody id="collectTaskRows"><tr><td colspan="5" class="collect-empty">这里还没有笔记。连接浏览器，创建一个批次开始。</td></tr></tbody></table></div>
+                    <p class="collect-help" id="collectTableHint"></p>
+                </section>
+            </section>
+            <section class="view" data-page="new_task">
                 <section class="surface composer">
                     <div class="composer-head">
                         <span class="composer-hint"><svg><use href="#link"/></svg><span
@@ -715,6 +789,7 @@
     </div>
 </dialog>
 
+<script src="./collection.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

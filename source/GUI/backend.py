@@ -24,6 +24,7 @@ from ..module import (
     LICENCE,
     RELEASES,
     REPOSITORY,
+    ROOT,
     VERSION_BETA,
     VERSION_MAJOR,
     VERSION_MINOR,
@@ -32,6 +33,7 @@ from ..module import (
     compare_versions,
 )
 from ..translation import _
+from ..collection.service import CollectionService
 from .ui_strings import (
     NAME_FORMAT_FIELDS,
     get_ui_translations,
@@ -173,6 +175,8 @@ class GuiBackend:
         self.ready = Event()
         self.start_error: BaseException | None = None
         self.closed = False
+        self.download_lock = asyncio.Lock()
+        self.collection = CollectionService(ROOT, media=self._collection_media)
         self.settings_manager = Settings(VOLUME)
         self.settings: dict[str, Any] = {}
         self.xhs: XHS | None = None
@@ -266,7 +270,7 @@ class GuiBackend:
             return
         future = asyncio.run_coroutine_threadsafe(self._shutdown(), self.loop)
         with suppress(Exception):
-            future.result(timeout=15)
+            future.result(timeout=55)
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join(timeout=15)
         self.closed = True
@@ -274,6 +278,7 @@ class GuiBackend:
     async def _shutdown(self) -> None:
         """停止剪贴板监听和任务 worker，再关闭下载器。"""
 
+        await self.collection.close()
         if self.monitor_task:
             self.monitor_task.cancel()
             with suppress(CancelledError):
@@ -286,7 +291,7 @@ class GuiBackend:
             self.worker = None
         await self._close_xhs()
 
-    def call(self, coroutine):
+    def call(self, coroutine, timeout=30):
         """把协程提交到后台循环，并同步等待 PyWebView API 的返回值。"""
 
         try:
@@ -296,7 +301,7 @@ class GuiBackend:
             if not self.loop:
                 raise RuntimeError("GUI 后端未运行")
             return asyncio.run_coroutine_threadsafe(coroutine, self.loop).result(
-                timeout=30
+                timeout=timeout
             )
         except Exception:
             with suppress(Exception):
@@ -380,7 +385,8 @@ class GuiBackend:
             try:
                 task = self.tasks.get(task_id)
                 if task and task.state != "cancelled":
-                    await self._process_task(task)
+                    async with self.download_lock:
+                        await self._process_task(task)
             finally:
                 self.task_queue.task_done()
 
@@ -486,6 +492,8 @@ class GuiBackend:
     async def start_monitor(self) -> dict[str, Any]:
         """清空剪贴板后启动监听；监听创建的任务与手动任务共用同一队列。"""
 
+        if self.collection.busy or self.collection.command_lock.locked():
+            raise ValueError("请先暂停采集，再启动剪贴板监听。")
         if self.monitor_task and not self.monitor_task.done():
             return self.monitor
         await asyncio.to_thread(copy, "")
@@ -685,6 +693,8 @@ class GuiBackend:
     async def save_settings(self, data: dict[str, Any]) -> dict[str, Any]:
         """保存配置并重建下载器，使 Manager 处理后的新配置立即生效。"""
 
+        if self.collection.busy or self.collection.command_lock.locked():
+            return {"ok": False, "error": "请先暂停采集并等待收尾，再修改程序设置"}
         if any(task.state == "processing" for task in self.tasks.values()):
             return {"ok": False, "error": _("请等待正在处理的任务结束后再保存配置")}
         if self.monitor_task and not self.monitor_task.done():
@@ -762,6 +772,36 @@ class GuiBackend:
 
         return await asyncio.to_thread(open_path, self.xhs.manager.folder.resolve())
 
+    async def _collection_media(self, note, url):
+        async with self.download_lock:
+            self.collection.runner.checkpoint()
+            if not self.xhs:
+                raise RuntimeError("下载器尚未初始化")
+            result = await self.xhs.process_collected_note(note, url, media=True)
+            return result["media"]
+
+    async def collection_command(self, action, payload=None):
+        if not self.settings.get("disclaimer_accepted"):
+            return {"ok": False, "error": "请先完成程序的首次使用确认。"}
+        if self.monitor.get("active") and action in {"create", "start", "search"}:
+            return {"ok": False, "error": "请先关闭剪贴板监听，再进行采集。"}
+        if action == "open_folder":
+            path = self.collection.selected
+            if not path or not path.is_dir():
+                return {"ok": False, "error": "请先创建或打开一个批次。"}
+            def reveal():
+                if sys.platform == "win32":
+                    from os import startfile
+                    startfile(str(path))
+                else:
+                    Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)], stdout=DEVNULL, stderr=DEVNULL)
+            try:
+                await asyncio.to_thread(reveal)
+                return {"ok": True}
+            except OSError:
+                return {"ok": False, "error": "无法打开目录，请检查系统文件管理器。"}
+        return await self.collection.command(action, payload)
+
     async def snapshot(self) -> dict[str, Any]:
         """生成前端轮询所需的完整只读状态快照。"""
 
@@ -770,6 +810,7 @@ class GuiBackend:
         return {
             "disclaimer_accepted": self.settings["disclaimer_accepted"],
             "tasks": tasks,
+            "collection": self.collection.snapshot(),
             "files": list(self.files.values()),
             "history_enabled": history_enabled,
             "history_revision": self.history_revision,
@@ -805,6 +846,9 @@ class GuiApi:
         """获取一次前端状态快照。"""
 
         return self._backend.call(self._backend.snapshot())
+
+    def collection_command(self, action: str, payload: dict | None = None) -> dict:
+        return self._backend.call(self._backend.collection_command(action, payload), timeout=60)
 
     def paste_content(self) -> str:
         """读取剪贴板文本。"""

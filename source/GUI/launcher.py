@@ -44,7 +44,7 @@ def launch() -> None:
     api = GuiApi(backend)
     # 1280x720 为桌面端默认及最小尺寸，前端样式负责更窄窗口的响应式布局。
     window = webview.create_window(
-        PROJECT,
+        PROJECT + " · 采集工作台",
         index_url,
         width=1280,
         height=720,

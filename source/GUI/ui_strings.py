@@ -30,6 +30,7 @@ def get_ui_messages() -> dict[str, str]:
     """使用当前翻译器生成 GUI 文本字典。"""
 
     return {
+        "nav.collection": _("采集工作台"),
         "nav.new_task": _("创建任务"),
         "nav.queue": _("任务队列"),
         "nav.monitor": _("剪贴板模式"),

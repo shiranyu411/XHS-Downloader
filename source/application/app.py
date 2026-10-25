@@ -623,6 +623,26 @@ class XHS:
             )
         return result
 
+    async def process_collected_note(self, note: dict, url: str, media: bool = False):
+        """Public browser-collection adapter; never fetch the detail HTML again.
+
+        Archive/body/comment states belong to the collector. Download history only
+        skips this optional media phase, leaving ordinary downloads unchanged.
+        """
+        id_ = self.extract_link_id(url)
+        if note.get("noteId") != id_:
+            raise ValueError("collected note ID mismatch (expected camelCase page state)")
+        if not media:
+            return {"media": "disabled"}
+        if await self.has_download_record(id_):
+            return {"media": "success", "source": "existing_download_record"}
+        count = new_statistics(1)
+        result = await self.deal_script_tasks(note, index=None, count=count)
+        return {
+            "media": "success" if count.success else ("partial" if count.skip else "failed"),
+            "data": result,
+        }
+
     async def process_script_task(self, **kwargs):
         if self.script_task_handler:
             return await self.script_task_handler(**kwargs)

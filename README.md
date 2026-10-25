@@ -21,6 +21,8 @@
 <p>🔥 <b>小红书（XiaoHongShu、RedNote）链接提取/作品采集工具！</b></p>
 </div>
 <hr>
+<h2>本地 Fork：正文与评论原始数据采集</h2>
+<p>新增“采集工作台”桌面界面：专用 Chrome、关键词搜索、搜索发现、两级评论分页、原始响应存档、暂停续采和批次结果查看。<code>python main.py COLLECT</code> 命令行入口仍保留。当前已通过本地回归测试，真实评论分页仍待登录后验收。参见 <a href="采集使用说明.md">采集使用说明</a>、<a href="小红书批量采集方案.md">完整方案</a> 和 <a href="THIRD_PARTY_NOTICES.md">第三方来源</a>。</p>
 <h1>📑 项目功能</h1>
 <details>
 <summary>项目程序与用户脚本功能清单，快速了解项目能力（点击展开）</summary>

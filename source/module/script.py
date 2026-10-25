@@ -24,8 +24,10 @@ class ScriptServer:
         core: "XHS",
         host="0.0.0.0",
         port=5558,
+        collection_handler=None,
     ):
         self.core = core
+        self.collection_handler = collection_handler
         self.host = host
         self.port = port
         self.server = None
@@ -57,6 +59,18 @@ class ScriptServer:
                         )
                     )
                     continue
+                if str(data.get("type", "")).startswith("collection."):
+                    try:
+                        if self.collection_handler is None:
+                            raise ValueError("请启动原始数据采集入口（端口 5560）")
+                        reply = await self.collection_handler(data)
+                    except (ValueError, RuntimeError) as error:
+                        reply = {"status": "error", "message": str(error)}
+                    await websocket.send(dumps(reply, ensure_ascii=False))
+                    continue
+                if self.core is None:
+                    await websocket.send(dumps({"status": "error", "message": "此端口仅接收采集任务"}))
+                    continue
                 self.queue.put_nowait(data)
                 await websocket.send(
                     dumps(
@@ -79,7 +93,8 @@ class ScriptServer:
             self.port,
             origins=self.ORIGINS,
         )
-        self.worker = create_task(self.worker_loop())
+        if self.core is not None:
+            self.worker = create_task(self.worker_loop())
 
     async def stop(self):
         """停止服务器"""
