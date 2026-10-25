@@ -309,7 +309,11 @@
         });
         existing.forEach((child) => child.remove());
         if (children.length) {
-            target.replaceChildren(...children);
+            // Do not detach/reinsert every unchanged row (focus/scroll/animation churn).
+            children.forEach((child, index) => {
+                if (target.children[index] !== child) target.insertBefore(child, target.children[index] || null);
+            });
+            [...target.children].filter(child => !child.dataset.key).forEach(child => child.remove());
         } else if (createEmptyItem) {
             target.replaceChildren(createEmptyItem());
         } else {
@@ -823,10 +827,13 @@
 
     // PyWebView 负责所有数据变更，DOM 仅渲染快照；以下变量用于控制轮询和请求去重。
     let nativeApi = null;
-    let bridgeRefreshBusy = false;
     let settingsLoaded = false;
     let lastLogKey = null;
-    let stateRefreshTimer = null;
+    let downloadBusy = false, lastRefreshError = '';
+    const renderedSections = new Map();
+    const statePoller = window.createUiPoller({
+        refresh: fetchNativeState, isBusy: () => downloadBusy, activeDelay: 1000,
+    });
 
     const statusLabels = {
         processing: "queue.processing",
@@ -1198,39 +1205,48 @@
         });
     }
 
+    function changedSection(name, value, render) {
+        const key = JSON.stringify(value);
+        if (renderedSections.get(name) === key) return;
+        renderedSections.set(name, key);
+        render();
+    }
+
     function applyNativeState(state) {
-        // 应用一次完整状态快照；仅在 revision 变化时重新查询下载记录数据库。
-        renderNativeTaskLists(state.tasks, state.files);
-        window.XHSCollection.render(state.collection);
+        // Only changed sections touch the DOM. Hidden collection UI is not queried in Qt.
+        downloadBusy = state.tasks.some(task => task.state === 'processing') || state.monitor.active || state.collection?.busy;
+        changedSection('tasks', [state.tasks, state.files], () => renderNativeTaskLists(state.tasks, state.files));
+        if (state.collection) changedSection('collection', state.collection, () => window.XHSCollection.render(state.collection));
         const enabled = Boolean(state.history_enabled);
         const revision = Number(state.history_revision);
         const shouldRefreshHistory = enabled && (lastHistoryRevision !== revision || !historyEnabled);
-        setHistoryEnabled(enabled);
+        changedSection('historyEnabled', enabled, () => setHistoryEnabled(enabled));
         if (shouldRefreshHistory) {
             lastHistoryRevision = revision;
             void requestHistoryPage(historyPage || 1);
         } else if (!enabled) {
             lastHistoryRevision = revision;
         }
-        renderNativeLogs(state.logs);
+        changedSection('logs', state.logs, () => renderNativeLogs(state.logs));
         applyNativeSettings(state.settings);
-        renderNativeMonitor(state.monitor);
-        renderNativeAbout(state.about);
+        changedSection('monitor', state.monitor, () => renderNativeMonitor(state.monitor));
+        changedSection('about', state.about, () => renderNativeAbout(state.about));
     }
 
-    async function refreshNativeState() {
-        // 轮询期间禁止并发刷新，确保较新的状态快照不会被旧请求覆盖。
-        if (bridgeRefreshBusy) return;
-        bridgeRefreshBusy = true;
+    async function fetchNativeState() {
+        if (!nativeApi) return;
         try {
             applyNativeState(await nativeApi.get_state());
-            return true;
+            lastRefreshError = '';
         } catch (error) {
-            showToast(translateText("update.failed"), "warning");
-            return false;
-        } finally {
-            bridgeRefreshBusy = false;
+            const message = error.message || String(error);
+            if (lastRefreshError !== message) showToast(message, 'warning');
+            lastRefreshError = message;
         }
+    }
+
+    function refreshNativeState() {
+        return statePoller.request();
     }
 
     async function runNativeAction(action, options = {}) {
@@ -1249,9 +1265,8 @@
     }
 
     function startStatePolling() {
-        // 用户确认免责声明后才开始轮询完整状态，避免未授权时触发下载器运行时逻辑。
-        if (stateRefreshTimer) return;
-        stateRefreshTimer = window.setInterval(() => void refreshNativeState(), 500);
+        // Confirmed users only; hidden pages pause, active work 1s / idle 5s.
+        statePoller.start();
     }
 
     function showDisclaimer() {
@@ -1354,6 +1369,7 @@
                 if (!result.ok) throw new Error(result.error);
                 settingsLoaded = false;
                 await refreshUiTranslations();
+                renderedSections.clear();
                 showToast(translateText("settings.saved"));
             }, {loading: true});
         } else if (id === "discardSettings") {
@@ -1391,6 +1407,8 @@
             })();
         }
     }, true);
+
+    window.XHSNavigate = name => setView(name);
 
     function connectNativeBridge() {
         // pywebviewready 触发后先加载语言包；未同意免责声明时不进入状态轮询。

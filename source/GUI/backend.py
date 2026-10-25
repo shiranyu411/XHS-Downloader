@@ -19,6 +19,7 @@ from webbrowser import open as open_browser
 import webview
 from pyperclip import copy, paste
 
+from ..module.access import AccessRestricted
 from ..application import XHS
 from ..module import (
     LICENCE,
@@ -169,7 +170,10 @@ class GuiLogSink:
 class GuiBackend:
     """维护一个下载器实例和一个长期运行的 asyncio 事件循环。"""
 
-    def __init__(self) -> None:
+    def __init__(self, browser_host=None, workbench_root=None) -> None:
+        self.browser_host = browser_host
+        self.workbench_root = workbench_root or ROOT
+        self.workbench = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.thread: Thread | None = None
         self.ready = Event()
@@ -235,6 +239,9 @@ class GuiBackend:
         """读取配置；用户已同意免责声明后才创建下载器运行时。"""
 
         self.settings = self.settings_manager.run()
+        if self.browser_host:
+            from .workbench_service import WorkbenchService
+            self.workbench = WorkbenchService(self.workbench_root, self, self.browser_host)
         if not self.settings["disclaimer_accepted"]:
             return
         await self._start_runtime()
@@ -252,6 +259,8 @@ class GuiBackend:
         """按当前配置创建 XHS 实例，并把核心日志导向 GUI。"""
 
         self.xhs = XHS(**self.settings, _print=False)
+        if self.workbench:
+            self.xhs.html.on_restriction = self.workbench.restrict
         self.xhs.print.func = GuiLogSink(self)
         self.xhs.script_task_handler = self.create_script_task
         await self.xhs.__aenter__()
@@ -278,6 +287,8 @@ class GuiBackend:
     async def _shutdown(self) -> None:
         """停止剪贴板监听和任务 worker，再关闭下载器。"""
 
+        if self.workbench:
+            await self.workbench.close()
         await self.collection.close()
         if self.monitor_task:
             self.monitor_task.cancel()
@@ -329,9 +340,25 @@ class GuiBackend:
 
         if not self.xhs or not self.task_queue:
             return []
+        if self.workbench:
+            # Check before resolving even a short URL; a new/default batch cannot bypass a refusal.
+            self.workbench.check_access()
         links = await self.xhs.extract_links(content)
         if index:
             links = links[:1]
+        if self.workbench:
+            from ..collection.config import note_id
+            self.workbench.idle()
+            if index:
+                raise ValueError("一体化模式按整篇作品下载；指定图片序号请使用旧版界面。")
+            store = self.workbench.ensure_store()
+            store.enqueue(links, {"mode": "download_manual"})
+            ids = store.submit([note_id(link) for link in links], "download") if links else []
+            if ids:
+                for task in store.pending("download"):
+                    self.tasks[task['task_id']] = TaskState(task['task_id'], task['url'], source='workbench', display_text=task['note_id'])
+                self.workbench.start("download")
+            return ids
         ids = []
         for link in links:
             task_id = uuid4().hex
@@ -355,7 +382,7 @@ class GuiBackend:
 
         ids = await self._enqueue_links(content, "manual", index)
         if not ids:
-            self.add_log(_("提取小红书作品链接失败"), "warning")
+            self.add_log("没有新增下载任务：链接无效、已在队列或已完成。" if self.workbench else _("提取小红书作品链接失败"), "warning")
         return [self.tasks[i].as_dict() for i in ids]
 
     async def create_script_task(
@@ -363,6 +390,8 @@ class GuiBackend:
         data: dict,
         index: list | tuple | None,
     ) -> dict[str, Any] | None:
+        if self.workbench:
+            raise ValueError("一体化模式请从共享链接池提交任务；外部脚本接口保留在旧入口。")
         if not self.task_queue:
             return None
         task_id = uuid4().hex
@@ -421,7 +450,9 @@ class GuiBackend:
                     task_id=task.task_id,
                     result_callback=capture_statistics,
                 )
-            if statistics.get("success", 0):
+            if statistics.get("fail", 0):
+                task.state = "failed"
+            elif statistics.get("success", 0):
                 task.state = "success"
             elif statistics.get("skip", 0):
                 task.state = "skipped"
@@ -429,6 +460,11 @@ class GuiBackend:
                 task.state = "failed"
             if self.xhs.manager.download_record:
                 self.history_revision += 1
+        except AccessRestricted as error:
+            task.state = 'failed'
+            self.add_log(str(error), 'warning')
+            if self.workbench:
+                raise
         except CancelledError:
             task.state = "cancelled"
             self.cancel_task_files(task.task_id)
@@ -469,6 +505,8 @@ class GuiBackend:
     async def cancel_task(self, task_id: str) -> bool:
         """只允许取消尚未开始的 pending 任务，processing 任务不会被中断。"""
 
+        if self.workbench:
+            return self.workbench.cancel_download(task_id)
         task = self.tasks.get(task_id)
         if not task or task.state != "pending":
             return False
@@ -492,6 +530,8 @@ class GuiBackend:
     async def start_monitor(self) -> dict[str, Any]:
         """清空剪贴板后启动监听；监听创建的任务与手动任务共用同一队列。"""
 
+        if self.workbench:
+            raise ValueError("一体化模式请使用链接池；剪贴板监听仍可在旧版界面使用。")
         if self.collection.busy or self.collection.command_lock.locked():
             raise ValueError("请先暂停采集，再启动剪贴板监听。")
         if self.monitor_task and not self.monitor_task.done():
@@ -644,8 +684,9 @@ class GuiBackend:
         """记录用户已同意免责声明，并在首次同意后启动下载器运行时。"""
 
         if not self.settings["disclaimer_accepted"]:
-            self.settings["disclaimer_accepted"] = True
-            self.settings_manager.update(self.settings)
+            updated = {**self.settings, 'disclaimer_accepted': True}
+            self.settings_manager.update(updated)
+            self.settings = updated
         await self._start_runtime()
         return {"accepted": True}
 
@@ -693,6 +734,8 @@ class GuiBackend:
     async def save_settings(self, data: dict[str, Any]) -> dict[str, Any]:
         """保存配置并重建下载器，使 Manager 处理后的新配置立即生效。"""
 
+        if self.workbench and self.workbench.busy:
+            return {"ok": False, "error": "请先安全暂停工作台任务，再修改设置"}
         if self.collection.busy or self.collection.command_lock.locked():
             return {"ok": False, "error": "请先暂停采集并等待收尾，再修改程序设置"}
         if any(task.state == "processing" for task in self.tasks.values()):
@@ -702,7 +745,7 @@ class GuiBackend:
         # 仅接收 Settings.default 中定义的字段，避免前端额外数据进入配置。
         updated = dict(self.settings)
         updated.update(
-            {key: value for key, value in data.items() if key in Settings.default}
+            {key: value for key, value in data.items() if key in Settings.default and key != 'disclaimer_accepted'}
         )
         # 英文字段名称可能包含空格，GUI 以数组提交；旧配置字符串仍按项目格式读取。
         configured_name_format = updated.get("name_format") or ""
@@ -780,7 +823,14 @@ class GuiBackend:
             result = await self.xhs.process_collected_note(note, url, media=True)
             return result["media"]
 
+    async def workspace_command(self, action, payload=None):
+        if not self.workbench:
+            raise ValueError("请使用 WORKBENCH 入口打开一体化界面。")
+        return await self.workbench.command(action, payload)
+
     async def collection_command(self, action, payload=None):
+        if self.workbench:
+            return {"ok": False, "error": "一体化模式请使用顶部链接池与评论采集标签。"}
         if not self.settings.get("disclaimer_accepted"):
             return {"ok": False, "error": "请先完成程序的首次使用确认。"}
         if self.monitor.get("active") and action in {"create", "start", "search"}:
@@ -810,7 +860,7 @@ class GuiBackend:
         return {
             "disclaimer_accepted": self.settings["disclaimer_accepted"],
             "tasks": tasks,
-            "collection": self.collection.snapshot(),
+            "collection": None if self.workbench else self.collection.snapshot(),
             "files": list(self.files.values()),
             "history_enabled": history_enabled,
             "history_revision": self.history_revision,
@@ -846,6 +896,9 @@ class GuiApi:
         """获取一次前端状态快照。"""
 
         return self._backend.call(self._backend.snapshot())
+
+    def workspace_command(self, action: str, payload: dict | None = None) -> dict:
+        return self._backend.call(self._backend.workspace_command(action, payload), timeout=60)
 
     def collection_command(self, action: str, payload: dict | None = None) -> dict:
         return self._backend.call(self._backend.collection_command(action, payload), timeout=60)

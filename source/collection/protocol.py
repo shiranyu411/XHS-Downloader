@@ -11,7 +11,7 @@ def restricted(payload, status=200):
         return False
     message = str(payload.get("msg", payload.get("message", ""))).lower()
     return payload.get("code") in (-100, -101, -102, -10000, 300012, 300013) or any(
-        word in message for word in ("登录", "验证", "频繁", "访问限制", "captcha", "rate limit")
+        word in message for word in ("登录", "验证", "频繁", "访问限制", "账号状态异常", "帐号状态异常", "账号异常", "captcha", "rate limit")
     )
 
 

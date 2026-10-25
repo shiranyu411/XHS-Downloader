@@ -16,14 +16,25 @@
             try {
                 const u = new URL(a.href);
                 if (u.origin === location.origin && /^\/(explore|discovery\/item)\/[a-f0-9]{24}\/?$/i.test(u.pathname)) {
-                    found.set(u.pathname.split('/').filter(Boolean).pop(), u.href);
+                    const id = u.pathname.split('/').filter(Boolean).pop().toLowerCase();
+                    const previous = found.get(id);
+                    // Duplicate cover/title anchors must not downgrade a usable URL.
+                    if (!previous || u.searchParams.get('xsec_token') || !new URL(previous).searchParams.get('xsec_token')) {
+                        found.set(id, u.href);
+                    }
                 }
             } catch (_) { /* non-URL anchor */ }
         }
         for (const item of feeds) {
             if (!item?.noteCard || !/^[a-f0-9]{24}$/i.test(item.id) || !item.xsecToken) continue;
-            if (!found.has(item.id)) found.set(item.id,
-                `${location.origin}/discovery/item/${item.id}?source=webshare&xhsshare=pc_web&xsec_token=${encodeURIComponent(item.xsecToken)}&xsec_source=pc_share`);
+            const id = item.id.toLowerCase();
+            const existing = found.get(id);
+            if (existing && new URL(existing).searchParams.get('xsec_token')) continue;
+            const url = new URL(existing || `/explore/${id}`, location.origin);
+            url.searchParams.set('xsec_token', item.xsecToken);
+            url.searchParams.set('xsec_source', location.pathname === '/search_result' ? 'pc_search' :
+                location.pathname.startsWith('/user/profile/') ? 'pc_user' : 'pc_feed');
+            found.set(id, url.href);
         }
         return [...found.values()];
     }
@@ -70,9 +81,12 @@
         const note = unwrap(entry?.note);
         // No 'last object' fallback: it can silently archive a different note.
         const valid = note && (note.noteId || note.note_id) === noteId;
+        const restriction = /账号状态异常|帐号状态异常|账号异常|访问频繁|访问限制|安全验证/;
+        const refusal = restriction.test(document.title) || [...document.querySelectorAll('.error-wrapper, .error-container, .error-content, .risk-container')]
+            .some(el => visible(el) && restriction.test(el.innerText));
         return {note: valid ? JSON.parse(JSON.stringify(note)) : null,
             href: location.href, commentsReady: !!document.querySelector('.comments-container, .comment-list, .comments-el'),
-            blocked: [...document.querySelectorAll('.login-container, .login-modal, .captcha-container, #captcha, [class*="verify-modal"]')].some(visible),
+            blocked: refusal || [...document.querySelectorAll('.login-container, .login-modal, .captcha-container, #captcha, [class*="verify-modal"]')].some(visible),
             unavailable: [...document.querySelectorAll('.error-wrapper, .note-error, .error-container')]
                 .some(el => visible(el) && /不存在|已删除|无法查看|不可见/.test(el.innerText))};
     }

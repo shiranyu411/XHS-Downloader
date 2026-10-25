@@ -1,0 +1,13 @@
+/* Legacy downloader view embedded beneath the native top-level workflow tabs. */
+.qt-shell .app-shell { grid-template-columns: minmax(0,1fr); }
+.qt-shell .sidebar, .qt-shell .sidebar-scrim, .qt-shell .mobile-menu { display:none!important; }
+.qt-shell .content { padding-top:16px; }
+.qt-shell .workspace { min-width:0; }
+/* The integrated workflow downloads whole notes; per-image indices remain legacy-only. */
+.qt-shell .composer-index { display:none; }
+.qt-shell .composer-footer { justify-content:flex-end; }
+@media (max-height:740px) {
+    .qt-shell .topbar { min-height:48px; padding-top:8px; padding-bottom:8px; }
+    .qt-shell .content { padding:12px 20px; }
+    .qt-shell #urlInput { min-height:100px; height:120px; }
+}

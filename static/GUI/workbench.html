@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>XHS 一体化工作台</title><link rel="stylesheet" href="workbench.css"></head>
+<body><main>
+<header><div><small>XHS-DOWNLOADER / WORKSPACE</small><h1 id="heading">链接池</h1><p id="subtitle">发现、采集与下载，共享同一批作品。</p><p id="batch" class="workspace-name">默认工作区（自动保存）</p></div><span id="phase" class="badge">正在连接</span></header>
+<details class="panel" id="workspaceOptions"><summary>专题归档与采集参数（可选；直接下载无需设置）</summary>
+<section class="batch bar"><input id="name" placeholder="可选：专题批次名称" aria-label="新批次名称"><button id="create">另建批次（可选）</button><select id="batches" aria-label="已有批次"><option value="">选择已有批次…</option></select><button id="load">打开</button><button id="browse">选择目录</button></section>
+<details class="panel"><summary>新批次采集参数（已有批次保持原配置）</summary><div class="bar"><label>笔记打开间隔 / 秒 <input id="openInterval" type="number" min="0" max="86400" value="20"></label><label>评论分页间隔 / 秒 <input id="pageInterval" type="number" min="0" max="86400" value="3"></label><label>单篇超时 / 秒 <input id="noteTimeout" type="number" min="1" max="86400" value="300"></label><label>单篇最多分页操作 <input id="maxOperations" type="number" min="1" max="86400" value="500"></label></div><p id="configSummary" class="muted">间隔不保证避免访问限制；超出预算按部分完成保存。</p></details>
+<p class="muted">可直接粘贴链接下载，无需网页登录或手动创建批次。默认工作区自动保存；另建批次仅用于专题归档，不是绕过访问限制的入口。</p></details>
+<div id="error" role="alert" hidden></div>
+<div id="notice" role="status">正在读取共享工作区状态…</div>
+<section class="metrics"><article><span>当前链接池</span><b id="total">0</b></article><article><span>评论完整</span><b id="complete">0</b></article><article><span>部分 / 受限</span><b id="partial">0</b></article><article><span>媒体完成</span><b id="downloaded">0</b></article></section>
+<section class="panel" data-section="pool">
+<div class="bar"><input id="query" placeholder="搜索作品 ID / 标题" aria-label="搜索作品"><select id="filter" aria-label="状态筛选"><option value="all">全部作品</option><option value="pending">未采集评论</option><option value="complete">评论完整</option><option value="partial">部分 / 受限</option><option value="downloaded">已下载</option></select><select id="source" aria-label="发现来源"><option value="">全部来源</option></select><button id="search">筛选</button><button data-go="0">前往浏览发现</button></div>
+<details><summary>手工添加完整笔记链接</summary><textarea id="links" rows="4" placeholder="每行一个完整 HTTPS 笔记链接，保留原有访问参数"></textarea><button id="import">仅加入链接池，不开始采集</button></details>
+</section>
+<section class="panel" data-section="collect" hidden><h2>正文与两级评论采集</h2><p>只处理已明确提交的队列。完整性依赖真实响应和分页终点，不以界面显示数量代替。</p><div class="bar"><button class="primary" data-start="comments">开始 / 继续已提交队列</button><button data-pause>安全暂停</button><button data-action="folder">打开原始数据目录</button></div><p id="progress">最近尝试：一级 0 · 回复 0</p></section>
+<section class="panel" data-section="results" hidden><h2>批次存档与结果</h2><p id="path"></p><p>原始响应、采集尝试、回复关系保存在批次目录。隐藏作品不会删除存档。</p><div class="bar"><button data-action="folder">打开批次目录</button><button data-action="export">导出任务摘要 CSV</button><button data-action="restore_hidden">恢复本批次隐藏作品</button><button data-go="3">查看下载文件与历史</button></div><p class="muted">数据清洗、情感分析不属于本程序范围。</p></section>
+<section class="panel" id="tablePanel"><div class="bar"><h2>作品记录</h2><span id="selected">已选 0 篇</span><button id="clear">清空选择</button></div><div class="tablewrap"><table><thead><tr><th><input id="selectPage" type="checkbox" aria-label="选择当前页"></th><th>作品标题 / ID</th><th>发现记录</th><th>正文 / 评论</th><th>媒体下载</th><th>队列 / 最近结果</th></tr></thead><tbody id="rows"></tbody></table></div><div class="bar pagination"><span id="range"></span><button id="previous">上一页</button><button id="next">下一页</button></div>
+<div class="bar actions"><button class="primary" data-submit="comments">提交评论队列</button><button data-submit="download">提交下载队列</button><button data-retry="comments">补采所选不完整</button><button data-retry="download">重试所选下载</button><button data-action="copy">复制所选链接</button><button data-action="export_links">导出所选链接</button><button id="hide">隐藏所选</button></div><p class="muted">提交只入队，不立即开始。选择可以跨页保留；切换批次会清空选择。下载无需先采评论。</p></section>
+<section class="panel" id="queue"><div class="bar"><strong id="queues">待运行：评论 0 · 下载 0</strong><button data-go="2">前往评论采集</button><button data-go="3">前往作品下载</button></div></section>
+<section class="panel" id="restricted" hidden><h2>平台访问已暂停</h2><p>不会自动重试或切换路径。请按平台提示等待，并手动确认会话恢复后再继续。</p><button id="ack">我已人工确认恢复（仅解除锁定，不自动开始）</button></section>
+<section class="panel" data-section="collect" hidden><h2>运行记录</h2><pre id="logs"></pre></section>
+</main><script src="qt-bridge.js"></script><script src="ui-polling.js"></script><script src="workbench.js"></script></body></html>

@@ -40,7 +40,8 @@ class NavigationGate:
 
 
 class Runner:
-    def __init__(self, store, media=None):
+    def __init__(self, store, media=None, host=None):
+        self.host = host
         self.store, self.config, self.media = store, store.config, media
         self.pause_requested = False
         self.paused = False
@@ -54,6 +55,11 @@ class Runner:
         self.message = "正在暂停，等待已发出的响应写入"
 
     async def connect(self, playwright):
+        if self.host:
+            browser, context = await self.host.connect(playwright)
+            self.store.control('browser_version', getattr(self.host, 'version', browser.version))
+            self.store.control('active_cdp', self.host.endpoint)
+            return browser, context
         browser = await playwright.chromium.connect_over_cdp(self.config.cdp, timeout=5000)
         if not browser.contexts:
             raise RuntimeError("专用 Chrome 没有可用上下文")
@@ -61,7 +67,8 @@ class Runner:
         return browser, browser.contexts[0]
 
     async def discover(self, context):
-        pages = [p for p in context.pages if re.match(r"https://www\.(xiaohongshu|rednote)\.com/(search_result|user/profile/|explore(?:\?|$))", p.url)]
+        pages = ([await self.host.discovery_page()] if self.host else
+                 [p for p in context.pages if re.match(r"https://www\.(xiaohongshu|rednote)\.com/(search_result|user/profile/|explore(?:\?|$))", p.url)])
         if len(pages) != 1:
             raise RuntimeError("请在专用 Chrome 中只保留一个搜索结果、推荐或作者主页标签")
         page = pages[0]
@@ -135,11 +142,12 @@ class Runner:
         strategy = "request" if strategy == "auto" else strategy
         result = {"body": "partial", "comments": "partial" if self.config.comments else "not_requested", "media": "disabled", "reason": "unknown", "strategy": strategy}
         status = "finished"
-        page = await context.new_page()
+        page = None
         capture = Capture(self.store, attempt, id_, ledger)
         note = None
         pause_error = None
         try:
+            page = await self.host.new_page() if self.host else await context.new_page()
             await capture.start(page)
             await page.add_init_script(path=str(ADAPTER))
             await page.add_init_script(path=str(REQUEST_ADAPTER))
@@ -189,6 +197,9 @@ class Runner:
         finally:
             try:
                 await capture.stop()
+                if ledger.blocked and not pause_error:
+                    pause_error = Paused('access_restricted')
+                    status, result['reason'] = 'paused', 'access_restricted'
                 if self.config.comments:
                     result["comments"] = "blocked" if ledger.blocked else ("complete_observed" if ledger.complete() and result["body"] == "saved" and result["reason"] == "observed_end" and not pause_error else "partial")
                 self.store.save(attempt, id_, "comment_progress", encode(ledger.record()), progress=ledger.record())
@@ -200,7 +211,11 @@ class Runner:
                     if html:
                         self.store.save(attempt, id_, "page_state_snapshot", html.encode(), {"scope": "diagnostic_dom", "reason": result["reason"]})
             finally:
-                await page.close()
+                if page:
+                    if self.host:
+                        await self.host.close_page(page)
+                    else:
+                        await page.close()
         if note and self.config.media and not pause_error and result["reason"] != "adapter_unavailable":
             try:
                 self.checkpoint()
@@ -226,6 +241,11 @@ class Runner:
             req = ledger.next_request()
             if req is None:
                 return "pagination_evidence_invalid"
+            # Explicit pacing; never hide restrictions by switching request paths.
+            until = time.monotonic() + self.config.page_interval
+            while time.monotonic() < until:
+                self.checkpoint(capture)
+                await asyncio.sleep(min(0.1, max(0, until - time.monotonic())))
             target = request_url(req, capture.templates, url)
             op = capture.begin_operation(target)
             reason = "controlled_operation_incomplete"

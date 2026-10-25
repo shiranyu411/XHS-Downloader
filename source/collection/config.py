@@ -9,6 +9,7 @@ from . import UPSTREAM, VERSION
 class Config:
     cdp: str = "http://127.0.0.1:9222"
     open_interval: float = 20
+    page_interval: float = 0
     max_scrolls: int = 50
     note_timeout: float = 300
     operation_timeout: float = 8
@@ -22,7 +23,7 @@ class Config:
         u = urlsplit(self.cdp)
         if u.scheme != "http" or u.hostname not in {"localhost", "127.0.0.1", "::1"}:
             raise ValueError("CDP 必须是本机 http 地址")
-        for key in ("open_interval", "max_scrolls", "note_timeout", "operation_timeout",
+        for key in ("open_interval", "page_interval", "max_scrolls", "note_timeout", "operation_timeout",
                     "max_operations", "no_progress_limit"):
             value = getattr(self, key)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 86400:

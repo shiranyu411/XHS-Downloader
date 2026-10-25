@@ -35,6 +35,15 @@ def envelope(items, more=False, cursor=""):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_http_461_success_true_is_still_an_access_restriction(self):
+        ledger = Ledger(NOTE)
+        ledger.observe(Request("replies", NOTE, "root"),
+                       {"success": True, "code": 300013, "msg": "访问频繁，请稍后再试", "data": {}}, 461)
+        self.assertTrue(ledger.blocked)
+        self.assertFalse(ledger.complete())
+        self.assertIsNone(ledger.next_request())
+        self.assertIn("business_or_http_error", ledger.gaps)
+
     def test_short_and_empty_pages_with_more_are_not_terminal(self):
         ledger = Ledger(NOTE)
         ledger.observe(Request("comments", NOTE), envelope([], True, "p1"))
@@ -179,6 +188,20 @@ class StoreTests(unittest.TestCase):
 
 
 class CaptureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cors_preflight_is_not_a_missing_comment_response(self):
+        capture = Capture(None, None, NOTE, Ledger(NOTE))
+        url = request_url(Request("comments", NOTE), {}, URL)
+        capture.request({"requestId": "preflight", "type": "Preflight",
+                         "request": {"url": url, "method": "OPTIONS"}})
+        capture.response({"requestId": "preflight", "response": {"status": 200}})
+        capture.finished({"requestId": "preflight"})
+        self.assertFalse(capture.requests)
+        self.assertFalse(capture.jobs)
+        self.assertFalse(capture.ledger.gaps)
+        capture.request({"requestId": "actual", "type": "XHR",
+                         "request": {"url": url, "method": "GET"}})
+        self.assertIn("actual", capture.requests)
+
     async def check_storage_failure(self, fail_kind):
         with tempfile.TemporaryDirectory() as root:
             store = Store(Path(root), Config())
@@ -331,6 +354,27 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.store.enqueue([URL], {"mode": "test_fixture"})
         runner = Runner(self.store)
         return await runner.collect(self.context, self.store.next_task())
+
+    async def test_discovery_upgrades_bare_links_and_keeps_signed_dom_links(self):
+        from source.collection.runner import ADAPTER
+        page = await self.context.new_page()
+        await page.goto('https://www.xiaohongshu.com/search_result?keyword=fixture')
+        await page.evaluate("""note => {
+            window.__INITIAL_STATE__.search = {feeds: [{id: note, noteCard: {}, xsecToken: 'fixture+/='}]};
+            document.body.innerHTML = `<a href='/explore/${note}'>cover</a>`;
+        }""", NOTE)
+        await page.add_script_tag(path=str(ADAPTER))
+        urls = await page.evaluate('window.__xhsCollect.links()')
+        self.assertEqual(len(urls), 1)
+        query = parse_qs(urlsplit(urls[0]).query)
+        self.assertEqual(query['xsec_token'], ['fixture+/='])
+        self.assertEqual(query['xsec_source'], ['pc_search'])
+        await page.evaluate("""note => {
+            document.body.innerHTML = `<a href='/explore/${note}?xsec_token=dom-fixture&xsec_source=pc_search'>signed</a>
+                <a href='/explore/${note}'>bare</a>`;
+        }""", NOTE)
+        urls = await page.evaluate('window.__xhsCollect.links()')
+        self.assertEqual(parse_qs(urlsplit(urls[0]).query)['xsec_token'], ['dom-fixture'])
 
     async def test_full_pagination_over_20_roots_and_50_replies(self):
         try:

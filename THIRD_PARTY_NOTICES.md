@@ -1,5 +1,13 @@
 # 采集扩展的第三方来源
 
+## 可选 Qt 桌面运行时
+
+一体化入口通过 `desktop` extra 使用 PySide6 / Qt WebEngine / Qt WebChannel，以及 Playwright。当前验证组合为 PySide6 6.10.3 与 Playwright 1.64.1。Qt WebChannel 的 `qwebchannel.js` 从 Qt 自带的 `qrc` 资源读取，未复制进本仓库；`qt-bridge.js` 为本项目的 Promise 适配层。
+
+发行桌面安装包时须保留 PySide6、Qt 和 Chromium 发行物附带的许可证与第三方声明，并核查实际采用模块、编解码器的分发条件，不能把 Chromium 全部第三方组件概括为单一许可证。当前只提供依赖安装和源码启动，未分发独立打包运行时。
+
+参考：[Qt for Python 许可](https://doc.qt.io/qtforpython-6/licenses.html)、[Qt WebEngine 许可](https://doc.qt.io/qt-6/qtwebengine-licensing.html)。
+
 ## XHS-Downloader
 
 本工作区基于 JoeanAmier/XHS-Downloader。原项目 GPL-3.0 许可保留在根目录 `LICENSE`。原脚本滚动和发现逻辑的基线为 `2ab2620b0dd35b04530e70f1e9c7ab3f78c5d6c5`。

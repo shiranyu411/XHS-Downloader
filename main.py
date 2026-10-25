@@ -49,6 +49,9 @@ if __name__ == "__main__":
     ):
         if len(argv) == 1:
             launch()
+        elif argv[1].upper() == "WORKBENCH":
+            from source.GUI.qt_launcher import launch as launch_workbench
+            launch_workbench()
         elif argv[1].upper() == "COLLECT":
             from source.collection.cli import main as collect_main
             raise SystemExit(collect_main(argv[2:]))

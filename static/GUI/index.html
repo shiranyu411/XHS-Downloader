@@ -22,6 +22,7 @@
     </noscript>
     <link rel="stylesheet" href="./styles.css">
     <link rel="stylesheet" href="./collection.css">
+    <link rel="stylesheet" href="./qt-shell.css">
 </head>
 <body>
 <svg class="icon-sprite">
@@ -192,7 +193,7 @@
                     </div>
                     <div class="collect-browser-bottom">
                         <div class="collect-statuses"><span class="collect-pill" id="collectCdpStatus">连接待检查</span><span class="collect-pill" id="collectLoginStatus">登录待检查</span><span class="collect-pill" id="collectAdapterStatus">请求模块待检查</span></div>
-                        <div class="collect-search"><label class="sr-only" for="collectKeyword">搜索关键词</label><input id="collectKeyword" placeholder="搜索关键词，例如 Keep4o" maxlength="100"><button type="button" class="secondary-button" id="collectSearch">搜索</button></div>
+                        <div class="collect-search"><label class="sr-only" for="collectKeyword">搜索关键词</label><input id="collectKeyword" placeholder="输入搜索关键词" maxlength="100"><button type="button" class="secondary-button" id="collectSearch">搜索</button></div>
                     </div>
                     <details class="collect-connection-options"><summary>连接设置 <span id="collectCheckedAt"></span></summary><label for="collectEndpoint">本机浏览器地址</label><input id="collectEndpoint" value="http://127.0.0.1:9223" spellcheck="false"><p>普通 Chrome 的端口可能不可用；“打开浏览器”使用独立配置，不复制日常浏览器的 Cookie。</p></details>
                 </section>
@@ -202,7 +203,7 @@
                         <div class="collect-tabs" role="tablist" aria-label="批次来源"><button type="button" id="collectNewTab" role="tab" aria-selected="true" aria-controls="collectNewPanel">新建批次</button><button type="button" id="collectExistingTab" role="tab" aria-selected="false" aria-controls="collectExistingPanel">打开已有</button></div>
                         <form id="collectCreateForm">
                             <fieldset id="collectNewPanel" role="tabpanel" aria-labelledby="collectNewTab">
-                                <label class="collect-field" for="collectName">批次名称<input id="collectName" maxlength="80" placeholder="例如 Keep4o-首次试采" autocomplete="off"></label>
+                                <label class="collect-field" for="collectName">批次名称<input id="collectName" maxlength="80" placeholder="例如 专题-首次试采" autocomplete="off"></label>
                                 <label class="collect-field" for="collectSource">从哪里采集<select id="collectSource"><option value="search">当前浏览器的搜索结果页</option><option value="links">粘贴完整笔记链接</option></select></label>
                                 <p class="collect-help" id="collectSourceHint">先在浏览器选好排序和筛选。自动滚动后，采集本次实际发现的笔记。</p>
                                 <div id="collectLinksArea" hidden><label class="collect-field" for="collectLinks">笔记链接<textarea id="collectLinks" rows="5" placeholder="https://www.xiaohongshu.com/explore/…&#10;每行一条，保留原有访问参数" spellcheck="false"></textarea></label><button class="collect-text-button" type="button" id="collectPaste">从剪贴板粘贴</button></div>
@@ -789,6 +790,8 @@
     </div>
 </dialog>
 
+<script src="./qt-bridge.js"></script>
+<script src="./ui-polling.js"></script>
 <script src="./collection.js"></script>
 <script src="./app.js"></script>
 </body>

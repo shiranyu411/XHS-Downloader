@@ -183,7 +183,7 @@ def parser():
     run.add_argument("--retry", action="store_true", help="重试部分完成任务，保留历史尝试")
     run.add_argument("--cdp")
     run.add_argument("--strategy", choices=("auto", "request", "ui"))
-    for name, type_ in (("open_interval", float), ("max_scrolls", int), ("note_timeout", float),
+    for name, type_ in (("open_interval", float), ("page_interval", float), ("max_scrolls", int), ("note_timeout", float),
                         ("operation_timeout", float), ("max_operations", int), ("no_progress_limit", int)):
         run.add_argument("--" + name.replace("_", "-"), type=type_)
     run.add_argument("--media", action="store_true", default=None, help="同时调用原下载器下载媒体")

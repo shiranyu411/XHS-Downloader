@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 from datetime import datetime, timezone
 from uuid import uuid4
+from urllib.parse import parse_qs, urlsplit
 
 from .config import Config, note_id
 
@@ -101,8 +102,10 @@ class Store:
             for id_, url in items:
                 self.db.execute("INSERT OR IGNORE INTO tasks(note_id,url,updated) VALUES(?,?,?)", (id_, url, now()))
                 self.db.execute("INSERT INTO sources(note_id,url,metadata,seen) VALUES(?,?,?,?)", (id_, url, encode(source).decode(), now()))
-                # Keep the most recently observed real URL; never invent a token.
-                self.db.execute("UPDATE tasks SET url=? WHERE note_id=?", (url, id_))
+                # A later bare anchor must not replace a usable observed access URL.
+                previous = self.db.execute("SELECT url FROM tasks WHERE note_id=?", (id_,)).fetchone()[0]
+                if parse_qs(urlsplit(url).query).get("xsec_token") or not parse_qs(urlsplit(previous).query).get("xsec_token"):
+                    self.db.execute("UPDATE tasks SET url=? WHERE note_id=?", (url, id_))
         return {"observations": len(items), "tasks": self.db.execute("SELECT count(*) FROM tasks").fetchone()[0], "committed": self.db.total_changes > before}
 
     def begin(self, id_):

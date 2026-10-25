@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 from curl_cffi.requests import get
 from curl_cffi.requests.exceptions import RequestException
 
+from ..module.access import AccessRestricted, refusal_reason
 from ..module import ERROR, logging, retry, sleep_time
 from ..translation import _
 
@@ -24,6 +25,8 @@ class Html:
         self.timeout = manager.timeout
         self.proxy = manager.proxy
         self.impersonate = manager.impersonate
+        self.access_restriction = None
+        self.on_restriction = None
 
     @retry
     async def request_url(
@@ -34,6 +37,8 @@ class Html:
         proxy: str | None = None,
         **kwargs,
     ) -> str:
+        if self.access_restriction:
+            raise AccessRestricted(self.access_restriction)
         if not url.startswith("http"):
             url = f"https://{url}"
         headers = self.manager.get_headers(url)
@@ -53,6 +58,13 @@ class Html:
                     proxy=proxy,
                     **kwargs,
                 )
+            reason = refusal_reason(response.status_code, response.text, response.url)
+            if reason:
+                self.access_restriction = reason
+                if self.on_restriction:
+                    self.on_restriction(reason)
+                # This exception is deliberately not a RequestException: @retry must stop.
+                raise AccessRestricted(reason)
             await sleep_time(self.manager.avg_delay)
             response.raise_for_status()
             return response.text if content else str(response.url)

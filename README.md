@@ -21,8 +21,10 @@
 <p>🔥 <b>小红书（XiaoHongShu、RedNote）链接提取/作品采集工具！</b></p>
 </div>
 <hr>
-<h2>本地 Fork：正文与评论原始数据采集</h2>
-<p>新增“采集工作台”桌面界面：专用 Chrome、关键词搜索、搜索发现、两级评论分页、原始响应存档、暂停续采和批次结果查看。<code>python main.py COLLECT</code> 命令行入口仍保留。当前已通过本地回归测试，真实评论分页仍待登录后验收。参见 <a href="采集使用说明.md">采集使用说明</a>、<a href="小红书批量采集方案.md">完整方案</a> 和 <a href="THIRD_PARTY_NOTICES.md">第三方来源</a>。</p>
+<h2>本地 Fork：一体化流程工作台</h2>
+<p>新增可选的 Qt 单窗口入口：<code>python main.py WORKBENCH</code>，或双击 <code>启动一体化工作台.command</code>。顶部五标签为浏览发现、链接池、评论采集、作品下载、结果管理；内部共享批次，不需要复制粘贴链接。安装：<code>uv sync --extra desktop --extra collection --extra mcp</code>。见 <a href="一体化工作台使用说明.md">一体化使用说明</a>、<a href="一体化工作台实施方案.md">实施方案</a>。已通过本地 Qt/Chromium 合成集成测试，Qt 中的真实扫码登录与实采仍待验收；旧 PyWebView 和 CLI 入口保留。</p>
+<h2>正文与评论原始数据采集</h2>
+<p>新增“采集工作台”桌面界面：专用 Chrome、关键词搜索、搜索发现、两级评论分页、原始响应存档、暂停续采和批次结果查看。<code>python main.py COLLECT</code> 命令行入口仍保留。已完成真实小样本两级分页验证；高评论量样本触发访问频繁后已暂停，尚未通过批量稳定性验收。见 <a href="真实试采验证报告.md">真实试采验证报告</a>。参见 <a href="采集使用说明.md">采集使用说明</a>、<a href="小红书批量采集方案.md">完整方案</a> 和 <a href="THIRD_PARTY_NOTICES.md">第三方来源</a>。</p>
 <h1>📑 项目功能</h1>
 <details>
 <summary>项目程序与用户脚本功能清单，快速了解项目能力（点击展开）</summary>

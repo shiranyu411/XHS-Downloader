@@ -58,6 +58,10 @@ class Capture:
 
     def request(self, event):
         r = event["request"]
+        # CORS preflight has no business response body and is not a comment page.
+        # The corresponding GET/POST remains subject to full capture validation.
+        if r["method"] == "OPTIONS" or event.get("type") == "Preflight":
+            return
         req = classify(r["url"], r.get("postData"), event.get("type"))
         if req is None or self.stopped:
             return
