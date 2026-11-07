@@ -1,5 +1,7 @@
 from asyncio import Semaphore, gather
 from pathlib import Path
+import hashlib
+import re
 from typing import TYPE_CHECKING, Any, Callable
 
 from aiofiles import open
@@ -69,6 +71,50 @@ class Download:
         self.live_download = manager.live_download
         self.author_archive = manager.author_archive
         self.write_mtime = manager.write_mtime
+
+    @classmethod
+    def for_collection(cls, root):
+        """Use the upstream clients and downloader without touching user history/settings."""
+        from ..module.manager import Manager
+        from ..module.static import IMPERSONATE
+        from ..expansion import Cleaner
+        from types import SimpleNamespace
+        root.mkdir(parents=True, exist_ok=True)
+        quiet = SimpleNamespace(write=lambda *a, **kw: None)
+        manager = Manager(root=root, path=str(root), folder='files', name_format='作品ID',
+                          chunk=2 * 1024 * 1024, impersonate=IMPERSONATE, cookie='',
+                          proxy=None, proxy_download=False, timeout=60, retry=2, avg_delay=15,
+                          record_data=False, image_format='auto', image_download=True,
+                          video_download=True, video_cover_download=True, live_download=True,
+                          video_preference='resolution', download_record=False, folder_mode=False,
+                          author_archive=False, write_mtime=False, script_server=False,
+                          note_format='', cleaner=Cleaner(), print_object=lambda: quiet)
+        downloader = cls(manager)
+        # Collection owns a batch-wide media semaphore and per-file locks.
+        # The upstream global MAX_WORKERS=1 otherwise serializes every asset
+        # across all post workers, defeating the collection worker pool.
+        downloader.SEMAPHORE = Semaphore(12)
+        return downloader
+
+    async def download_file(self, url, path, name, suffix='jpeg'):
+        """Public single-asset entry; shares streaming, retries and format detection."""
+        path.mkdir(parents=True, exist_ok=True)
+        saved = {}
+        def progress(event):
+            saved.update(event)
+        ok = await self.__download(url, path, name, suffix, 0, progress, None)
+        if not ok or not saved.get('path'):
+            return {'status': 'failed', 'reason': saved.get('reason') or 'download_failed'}
+        file = Path(saved['path'])
+        if not file.is_file() or not file.stat().st_size:
+            return {'status': 'failed', 'reason': 'file_missing_or_empty'}
+        with file.open('rb') as stream:
+            header = stream.read(64)
+            if not any(header[offset:offset + len(signature)] == signature for offset, signature, _ in FILE_SIGNATURES) and header[4:8] != b'ftyp':
+                return {'status': 'failed', 'reason': 'invalid_media_signature'}
+            stream.seek(0)
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        return {'status': 'saved', 'path': str(file), 'sha256': digest, 'size': file.stat().st_size, 'reason': ''}
 
     async def run(
         self,
@@ -241,7 +287,7 @@ class Download:
                 temp,
             )
 
-            def report(state: str, total: int | None = None) -> None:
+            def report(state: str, total: int | None = None, saved_path: Path | None = None, reason: str | None = None) -> None:
                 if progress:
                     progress(
                         {
@@ -250,6 +296,8 @@ class Download:
                             "completed_bytes": completed,
                             "total_bytes": total,
                             "state": state,
+                            "path": str(saved_path.resolve()) if saved_path else None,
+                            "reason": reason,
                         }
                     )
 
@@ -264,7 +312,21 @@ class Download:
                         raise CacheError(
                             _("文件 {0} 缓存异常，重新下载").format(temp.name),
                         )
+                    if response.status_code in (401, 403, 429, 461, 471):
+                        from ..module.access import AccessRestricted
+                        raise AccessRestricted(f'media_http_{response.status_code}')
                     response.raise_for_status()
+                    # Servers may ignore Range. Appending a full response corrupts files.
+                    if response.status_code == 200 and completed:
+                        self.manager.delete(temp)
+                        completed = 0
+                    if response.status_code == 206:
+                        match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+|\*)', response.headers.get('content-range', ''))
+                        if not match or int(match[1]) != completed:
+                            raise CacheError('invalid_content_range')
+                    content_type = response.headers.get('content-type', '').split(';')[0].lower()
+                    if content_type in {'text/html', 'application/json', 'text/plain'}:
+                        raise CacheError('non_media_response')
                     # self.__create_progress(
                     #     bar,
                     #     int(
@@ -272,6 +334,7 @@ class Download:
                     #             'content-length', 0)) or None,
                     # )
                     content_length = int(response.headers.get("content-length", 0) or 0)
+                    start_bytes = completed
                     total = completed + content_length if content_length else None
                     report("downloading", total)
                     buffer = bytearray()
@@ -285,6 +348,10 @@ class Download:
                             report("downloading", total)
                         if buffer:
                             await f.write(bytes(buffer))
+                    if completed == 0 or content_length and completed - start_bytes != content_length:
+                        raise CacheError('incomplete_media_response')
+                    if response.status_code == 206 and match[3] != '*' and completed != int(match[3]):
+                        raise CacheError('incomplete_media_range')
                 real = await self.__suffix_with_file(
                     temp,
                     path,
@@ -298,11 +365,12 @@ class Download:
                     mtime,
                     self.write_mtime,
                 )
-                report("completed", total)
+                report("completed", total, real)
                 logging(self.print, _("文件 {0} 下载成功").format(real.name))
                 return True
             except RequestException as error:
-                report("failed")
+                code = getattr(getattr(error, 'response', None), 'status_code', None)
+                report("failed", reason=f'media_http_{code}' if code else type(error).__name__)
                 logging(
                     self.print,
                     _("网络异常，{0} 下载失败，错误信息: {1}").format(
@@ -312,7 +380,7 @@ class Download:
                 )
                 return False
             except CacheError as error:
-                report("failed")
+                report("failed", reason=str(error))
                 self.manager.delete(temp)
                 logging(
                     self.print,

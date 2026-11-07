@@ -91,7 +91,7 @@ class Manager:
         self.blank_headers = HEADERS.copy()
         self.impersonate = self.__check_impersonate(impersonate)
         self.retry = self.__check_integer(retry, 5, 0)
-        self.avg_delay = self.__check_float(avg_delay, 6.0, 0.1)
+        self.avg_delay = self.__check_float(avg_delay, 60.0, 0.1)
         self.chunk = self.__check_integer(chunk, 2 * 1024 * 1024, 1024 * 1024)
         self.name_format = self.__check_name_format(name_format)
         self.record_data = self.check_bool(record_data, False)

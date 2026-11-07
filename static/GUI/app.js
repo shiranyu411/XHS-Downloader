@@ -7,8 +7,28 @@
     const viewTitle = document.getElementById("viewTitle");
     const toastRegion = document.getElementById("toastRegion");
     const startupScreen = document.getElementById("startupScreen");
+    const integrated = () => document.documentElement.classList.contains('qt-shell');
+    let nativeActionPending = false, integratedState = null, inputResult = null;
 
-    const viewNames = new Set(["new_task", "monitor", "queue", "history", "logs", "settings", "disclaimer", "about"]);
+    function qtFeedback(message) {
+        const element = document.getElementById('qtDownloadFeedback');
+        if (integrated()) {element.textContent = message; element.hidden = !message;}
+    }
+    function qtConfirm(title, message) {
+        if (!integrated()) return Promise.resolve(true);
+        const dialog = document.getElementById('qtActionConfirm');
+        document.getElementById('qtConfirmTitle').textContent = title;
+        document.getElementById('qtConfirmCopy').textContent = message;
+        dialog.returnValue = '';
+        return new Promise(resolve => {
+            dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), {once:true});
+            dialog.showModal(); document.getElementById('qtConfirmCancel').focus();
+        });
+    }
+    document.getElementById('qtConfirmCancel').onclick = () => document.getElementById('qtActionConfirm').close('cancel');
+    document.getElementById('qtConfirmAccept').onclick = () => document.getElementById('qtActionConfirm').close('confirm');
+
+    const viewNames = new Set(["collection", "new_task", "monitor", "queue", "history", "logs", "settings", "disclaimer", "about"]);
 
     let uiTranslations = Object.create(null);
     let translatedUiInitialized = false;
@@ -39,6 +59,12 @@
                 element.setAttribute(attribute, translateText(element.dataset[dataKey]));
             });
         });
+        if (integrated()) {
+            document.querySelector('#createTask [data-i18n]').textContent = '下载本次输入';
+            document.querySelector('#pasteAndProcess [data-i18n]').textContent = '粘贴并下载本次内容';
+            document.querySelector('#clearFinished [data-i18n]').textContent = '归档已结束列表';
+            document.querySelector('[data-i18n="modal.delete_history_warning"]').textContent = '只删除下载器全局去重记录，不删除文件，不重置工作台成功作业；以后可能重新下载。';
+        }
     }
 
     function icon(name) {
@@ -171,7 +197,8 @@
 
     function updateCreateButton() {
         const hasContent = Boolean(urlInput.value.trim());
-        createTask.disabled = !hasContent;
+        createTask.disabled = !hasContent || (integrated() && (nativeActionPending || !integratedState?.permissions?.download?.can_start));
+        if (integrated()) document.getElementById('pasteAndProcess').disabled = nativeActionPending || !integratedState?.permissions?.download?.can_start;
         return hasContent;
     }
 
@@ -227,7 +254,8 @@
     createTask.addEventListener("click", () => {
         void runNativeAction(async () => {
             const created = await nativeApi.create_tasks(urlInput.value, getImageIndex());
-            if (!created.length) throw new Error(translateText("toast.no_supported_link"));
+            if (!created.length && !integrated()) throw new Error(translateText("toast.no_supported_link"));
+            if (!created.length) return; // Qt snapshot explains duplicates / existing jobs, not a parse failure.
             urlInput.value = "";
             indexInput.value = "";
             updateCreateButton();
@@ -239,12 +267,18 @@
             urlInput.value = content;
             updateCreateButton();
             const created = await nativeApi.create_tasks(content, getImageIndex());
-            if (!created.length) throw new Error(translateText("toast.no_supported_link"));
+            if (!created.length && !integrated()) throw new Error(translateText("toast.no_supported_link"));
+            if (!created.length) return;
             urlInput.value = "";
             indexInput.value = "";
             updateCreateButton();
         });
     });
+
+    document.getElementById('qtViewInput').onclick = () => {
+        if (!inputResult?.note_ids?.length) return;
+        void nativeApi.navigate_range(inputResult.note_ids, '本次媒体输入').catch(e => qtFeedback(e.message));
+    };
 
     // 任务队列和文件下载区使用独立的滚动容器，避免条目增加时改变页面整体高度。
     const queueList = document.getElementById("queueList");
@@ -309,7 +343,11 @@
         });
         existing.forEach((child) => child.remove());
         if (children.length) {
-            target.replaceChildren(...children);
+            // Do not detach/reinsert every unchanged row (focus/scroll/animation churn).
+            children.forEach((child, index) => {
+                if (target.children[index] !== child) target.insertBefore(child, target.children[index] || null);
+            });
+            [...target.children].filter(child => !child.dataset.key).forEach(child => child.remove());
         } else if (createEmptyItem) {
             target.replaceChildren(createEmptyItem());
         } else {
@@ -327,7 +365,7 @@
         // 根据后端快照生成的 DOM 统计各状态数量，并更新筛选结果为空时的提示。
         const items = [...queueList.querySelectorAll(".queue-item")];
         const counts = items.reduce((result, item) => {
-            result[item.dataset.state] += 1;
+            result[item.dataset.state] = (result[item.dataset.state] || 0) + 1;
             item.hidden = !matchesQueueFilter(item.dataset.state);
             return result;
         }, {
@@ -367,6 +405,7 @@
 
     document.getElementById("copyTaskLinks").addEventListener("click", () => {
         void runNativeAction(async () => {
+            if (!await qtConfirm('复制完整访问链接？', '这些链接可能包含访问参数，请勿随意公开。只复制当前下载列表范围。')) return;
             const copied = await nativeApi.copy_task_links(currentQueueFilter);
             if (copied === 0) {
                 showToast(translateText("toast.no_links_to_copy"), "warning");
@@ -816,17 +855,20 @@
         renderMonitorState(monitorMode);
         if (!translatedUiInitialized) {
             const initialView = window.location.hash.slice(1);
-            setView(viewNames.has(initialView) ? initialView : "new_task");
+            setView(viewNames.has(initialView) ? initialView : "collection");
             translatedUiInitialized = true;
         }
     }
 
     // PyWebView 负责所有数据变更，DOM 仅渲染快照；以下变量用于控制轮询和请求去重。
     let nativeApi = null;
-    let bridgeRefreshBusy = false;
     let settingsLoaded = false;
     let lastLogKey = null;
-    let stateRefreshTimer = null;
+    let downloadBusy = false, lastRefreshError = '';
+    const renderedSections = new Map();
+    const statePoller = window.createUiPoller({
+        refresh: fetchNativeState, isBusy: () => downloadBusy, activeDelay: 1000,
+    });
 
     const statusLabels = {
         processing: "queue.processing",
@@ -836,6 +878,10 @@
         skipped: "queue.skipped",
         cancelled: "queue.cancelled",
     };
+
+    function taskLabel(state) {
+        return {paused:'已暂停，未在后台运行', interrupted:'中断未继续'}[state] || translateText(statusLabels[state]) || state;
+    }
 
     function statusClass(state) {
         // 将后端状态映射为 CSS 状态类，显示文案由 statusLabels 映射到翻译键。
@@ -870,11 +916,16 @@
         stateLine.className = "queue-state-line";
         const state = document.createElement("span");
         state.className = `status-text ${statusClass(task.state)}`;
-        state.textContent = translateText(statusLabels[task.state]);
+        state.textContent = taskLabel(task.state);
         stateLine.append(state);
+        if (task.reason) {
+            const reason = document.createElement('small');
+            reason.textContent = window.WorkspacePolicy.reason(task.reason);
+            stateLine.append(reason);
+        }
         detail.append(link, stateLine);
         item.append(symbol, detail);
-        if (task.state === "pending") {
+        if (["pending", "paused", "interrupted"].includes(task.state)) {
             const actions = document.createElement("div");
             actions.className = "queue-actions";
             const cancel = document.createElement("button");
@@ -893,6 +944,7 @@
                                              task.display_text,
                                              task.url,
                                              task.state,
+                                             task.reason,
                                          ]);
         if (item.dataset.renderKey === renderKey) return;
         item.dataset.renderKey = renderKey;
@@ -930,7 +982,7 @@
         state.className = `status-text ${statusClass(task.state)}`;
         if (task.state === "success") state.innerHTML = icon("check");
         else state.append(document.createElement("i"));
-        state.append(document.createTextNode(translateText(statusLabels[task.state])));
+        state.append(document.createTextNode(taskLabel(task.state)));
         item.append(symbol, primary, state);
     }
 
@@ -1156,7 +1208,7 @@
             proxy: document.getElementById("settingsProxy").value.trim() || null,
             timeout: Number(document.getElementById("settingsTimeout").value || 10),
             max_retry: Number(document.getElementById("settingsMaxRetry").value || 5),
-            avg_delay: Number(document.getElementById("settingsAvgDelay").value) || 6,
+            avg_delay: Number(document.getElementById("settingsAvgDelay").value) || 60,
             chunk: chunkSize,
             language: document.getElementById("settingsLanguage").value,
             script_server: document.getElementById("settingsScriptServer").checked,
@@ -1198,59 +1250,88 @@
         });
     }
 
+    function changedSection(name, value, render) {
+        const key = JSON.stringify(value);
+        if (renderedSections.get(name) === key) return;
+        renderedSections.set(name, key);
+        render();
+    }
+
     function applyNativeState(state) {
-        // 应用一次完整状态快照；仅在 revision 变化时重新查询下载记录数据库。
-        renderNativeTaskLists(state.tasks, state.files);
+        // Only changed sections touch the DOM. Hidden collection UI is not queried in Qt.
+        downloadBusy = state.tasks.some(task => task.state === 'processing') || state.monitor.active || state.collection?.busy || state.workbench?.busy;
+        if (state.workbench) {
+            integratedState = state.workbench;
+            changedSection('qtCategories', state.workbench.media_settings, () => {
+                document.getElementById('qtDownloadCategories').textContent = window.WorkspacePolicy.mediaSettings(state.workbench.media_settings);
+            });
+            changedSection('inputResult', state.input_result, () => {
+                inputResult = state.input_result;
+                if (inputResult) qtFeedback(inputResult.message);
+            });
+            document.getElementById('qtViewInput').disabled = !inputResult?.note_ids?.length;
+            updateCreateButton();
+        }
+        changedSection('tasks', [state.tasks, state.files], () => renderNativeTaskLists(state.tasks, state.files));
+        if (state.collection) changedSection('collection', state.collection, () => window.XHSCollection.render(state.collection));
         const enabled = Boolean(state.history_enabled);
         const revision = Number(state.history_revision);
         const shouldRefreshHistory = enabled && (lastHistoryRevision !== revision || !historyEnabled);
-        setHistoryEnabled(enabled);
+        changedSection('historyEnabled', enabled, () => setHistoryEnabled(enabled));
         if (shouldRefreshHistory) {
             lastHistoryRevision = revision;
             void requestHistoryPage(historyPage || 1);
         } else if (!enabled) {
             lastHistoryRevision = revision;
         }
-        renderNativeLogs(state.logs);
+        changedSection('logs', state.logs, () => renderNativeLogs(state.logs));
         applyNativeSettings(state.settings);
-        renderNativeMonitor(state.monitor);
-        renderNativeAbout(state.about);
+        changedSection('monitor', state.monitor, () => renderNativeMonitor(state.monitor));
+        changedSection('about', state.about, () => renderNativeAbout(state.about));
     }
 
-    async function refreshNativeState() {
-        // 轮询期间禁止并发刷新，确保较新的状态快照不会被旧请求覆盖。
-        if (bridgeRefreshBusy) return;
-        bridgeRefreshBusy = true;
+    async function fetchNativeState() {
+        if (!nativeApi) return;
         try {
             applyNativeState(await nativeApi.get_state());
-            return true;
+            lastRefreshError = '';
         } catch (error) {
-            showToast(translateText("update.failed"), "warning");
-            return false;
-        } finally {
-            bridgeRefreshBusy = false;
+            const message = error.message || String(error);
+            if (lastRefreshError !== message) showToast(message, 'warning');
+            qtFeedback(message);
+            if (integrated()) {integratedState = null; updateCreateButton();}
+            lastRefreshError = message;
         }
     }
 
+    function refreshNativeState() {
+        return statePoller.request();
+    }
+
     async function runNativeAction(action, options = {}) {
+        if (nativeActionPending) return;
+        nativeActionPending = true;
+        updateCreateButton();
         const showLoading = options.loading === true;
         if (showLoading) startupScreen.hidden = false;
-        // 写操作完成后立即刷新状态；异常直接显示实际原因，避免误用更新检查提示。
         try {
             await action();
-            await refreshNativeState();
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             showToast(message, "warning");
+            qtFeedback(message);
         } finally {
+            // Even on timeout, read authoritative state. Never replay a write automatically.
+            await refreshNativeState();
+            nativeActionPending = false;
+            updateCreateButton();
             if (showLoading) startupScreen.hidden = true;
         }
     }
 
     function startStatePolling() {
-        // 用户确认免责声明后才开始轮询完整状态，避免未授权时触发下载器运行时逻辑。
-        if (stateRefreshTimer) return;
-        stateRefreshTimer = window.setInterval(() => void refreshNativeState(), 500);
+        // Confirmed users only; hidden pages pause, active work 1s / idle 5s.
+        statePoller.start();
     }
 
     function showDisclaimer() {
@@ -1336,6 +1417,7 @@
             event.preventDefault();
             event.stopImmediatePropagation();
             void runNativeAction(async () => {
+                if (!await qtConfirm('归档已结束下载列表？', '只整理当前资料夹的下载任务显示，不删除作品、文件或下载去重记录；不会重新执行任务。')) return;
                 await nativeApi.clear_finished();
             });
         } else if (id === "openDownloadFolder") {
@@ -1349,10 +1431,12 @@
             event.preventDefault();
             event.stopImmediatePropagation();
             void runNativeAction(async () => {
+                if (!await qtConfirm('保存下载器设置？', '这会影响下载器后续任务，不改变本资料夹的采集节奏。变更路径不会搬迁已有文件；请确认类别、命名和平均等待设置。')) return;
                 const result = await nativeApi.save_settings(collectNativeSettings());
                 if (!result.ok) throw new Error(result.error);
                 settingsLoaded = false;
                 await refreshUiTranslations();
+                renderedSections.clear();
                 showToast(translateText("settings.saved"));
             }, {loading: true});
         } else if (id === "discardSettings") {
@@ -1391,15 +1475,23 @@
         }
     }, true);
 
+    window.XHSNavigate = name => setView(name);
+    window.XHSConsentUpdated = async () => {
+        if (!nativeApi) return;
+        const consent = await nativeApi.get_disclaimer();
+        if (consent.accepted) {if(disclaimerModal.open) disclaimerModal.close(); await refreshNativeState(); startStatePolling();}
+    };
+
     function connectNativeBridge() {
         // pywebviewready 触发后先加载语言包；未同意免责声明时不进入状态轮询。
         nativeApi = window.pywebview.api;
+        window.XHSCollection.connect(nativeApi, showToast);
         void (async () => {
             await refreshUiTranslations();
             startupScreen.hidden = true;
             const disclaimer = await nativeApi.get_disclaimer();
             if (!disclaimer.accepted) {
-                showDisclaimer();
+                if (!integrated()) showDisclaimer(); // Qt owns a global local consent dialog.
                 return;
             }
             await refreshNativeState();

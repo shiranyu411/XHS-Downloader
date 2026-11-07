@@ -5,7 +5,7 @@ import sys
 from asyncio import CancelledError
 from collections import deque
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from re import search
@@ -19,11 +19,13 @@ from webbrowser import open as open_browser
 import webview
 from pyperclip import copy, paste
 
+from ..module.access import AccessRestricted
 from ..application import XHS
 from ..module import (
     LICENCE,
     RELEASES,
     REPOSITORY,
+    ROOT,
     VERSION_BETA,
     VERSION_MAJOR,
     VERSION_MINOR,
@@ -32,6 +34,7 @@ from ..module import (
     compare_versions,
 )
 from ..translation import _
+from ..collection.service import CollectionService
 from .ui_strings import (
     NAME_FORMAT_FIELDS,
     get_ui_translations,
@@ -130,6 +133,8 @@ class TaskState:
     script_data: dict[str, Any] | None = None
     index: list | tuple | None = None
     display_text: str | None = None
+    reason: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         """转换为可通过 PyWebView 序列化给 JavaScript 的普通字典。"""
@@ -140,6 +145,8 @@ class TaskState:
             "display_text": self.display_text or self.url,
             "source": self.source,
             "state": self.state,
+            "reason": self.reason,
+            "evidence": self.evidence,
         }
 
 
@@ -167,12 +174,17 @@ class GuiLogSink:
 class GuiBackend:
     """维护一个下载器实例和一个长期运行的 asyncio 事件循环。"""
 
-    def __init__(self) -> None:
+    def __init__(self, browser_host=None, workbench_root=None) -> None:
+        self.browser_host = browser_host
+        self.workbench_root = workbench_root or ROOT
+        self.workbench = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.thread: Thread | None = None
         self.ready = Event()
         self.start_error: BaseException | None = None
         self.closed = False
+        self.download_lock = asyncio.Lock()
+        self.collection = CollectionService(ROOT, media=self._collection_media)
         self.settings_manager = Settings(VOLUME)
         self.settings: dict[str, Any] = {}
         self.xhs: XHS | None = None
@@ -181,6 +193,7 @@ class GuiBackend:
         self.monitor_task: asyncio.Task | None = None
         self.tasks: dict[str, TaskState] = {}
         self.files: dict[str, dict[str, Any]] = {}
+        self.last_input_result = None
         self.history_revision = 0
         self.logs: deque[dict[str, str]] = deque(maxlen=300)
         self.monitor: dict[str, Any] = {
@@ -231,6 +244,9 @@ class GuiBackend:
         """读取配置；用户已同意免责声明后才创建下载器运行时。"""
 
         self.settings = self.settings_manager.run()
+        if self.browser_host:
+            from .workbench_service import WorkbenchService
+            self.workbench = WorkbenchService(self.workbench_root, self, self.browser_host)
         if not self.settings["disclaimer_accepted"]:
             return
         await self._start_runtime()
@@ -248,6 +264,8 @@ class GuiBackend:
         """按当前配置创建 XHS 实例，并把核心日志导向 GUI。"""
 
         self.xhs = XHS(**self.settings, _print=False)
+        if self.workbench:
+            self.xhs.html.on_restriction = self.workbench.restrict
         self.xhs.print.func = GuiLogSink(self)
         self.xhs.script_task_handler = self.create_script_task
         await self.xhs.__aenter__()
@@ -266,7 +284,7 @@ class GuiBackend:
             return
         future = asyncio.run_coroutine_threadsafe(self._shutdown(), self.loop)
         with suppress(Exception):
-            future.result(timeout=15)
+            future.result(timeout=55)
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join(timeout=15)
         self.closed = True
@@ -274,6 +292,9 @@ class GuiBackend:
     async def _shutdown(self) -> None:
         """停止剪贴板监听和任务 worker，再关闭下载器。"""
 
+        if self.workbench:
+            await self.workbench.close()
+        await self.collection.close()
         if self.monitor_task:
             self.monitor_task.cancel()
             with suppress(CancelledError):
@@ -286,7 +307,7 @@ class GuiBackend:
             self.worker = None
         await self._close_xhs()
 
-    def call(self, coroutine):
+    def call(self, coroutine, timeout=30):
         """把协程提交到后台循环，并同步等待 PyWebView API 的返回值。"""
 
         try:
@@ -296,7 +317,7 @@ class GuiBackend:
             if not self.loop:
                 raise RuntimeError("GUI 后端未运行")
             return asyncio.run_coroutine_threadsafe(coroutine, self.loop).result(
-                timeout=30
+                timeout=timeout
             )
         except Exception:
             with suppress(Exception):
@@ -324,6 +345,8 @@ class GuiBackend:
 
         if not self.xhs or not self.task_queue:
             return []
+        if self.workbench:
+            return await self._enqueue_workspace_links(content, index)
         links = await self.xhs.extract_links(content)
         if index:
             links = links[:1]
@@ -341,6 +364,44 @@ class GuiBackend:
             ids.append(task_id)
         return ids
 
+    async def _enqueue_workspace_links(self, content, index):
+        # One owner/command lock, including short-link resolution. Never restore old work.
+        workbench = self.workbench
+        if workbench.lock.locked():
+            raise ValueError("另一个操作正在处理，请稍候。")
+        async with workbench.lock:
+            workbench.check_access("download")
+            if index:
+                raise ValueError("一体化模式按整篇作品下载；指定图片序号请使用旧版界面。")
+            from ..collection.workflow import parse_input
+            parsed = parse_input(content)
+            if parsed["invalid_count"]:
+                raise ValueError("本次输入包含非完整笔记链接，请修正后再下载。")
+            normalized = "\n".join(parsed["urls"] + parsed["short_links"]) or content
+            links = await self.xhs.extract_links(normalized)
+            workbench.check_access("download")
+            links = CollectionService.links("\n".join(links))
+            if not links:
+                self.last_input_result = {"note_ids": [], "created": 0, "message": "未识别到可下载的笔记链接。"}
+                return []
+            store = workbench.ensure_store()
+            result = store.enqueue(links, {"mode": "download_manual"})
+            ids = store.submit(result["note_ids"], "download")
+            self.last_input_result = {**result, "created": len(ids),
+                "message": f"本次识别 {len(result['note_ids'])} 篇，新增下载 {len(ids)} 篇；已有结果可查看，旧待处理 / 暂停 / 失败项不会自动继续。"}
+            workbench.handoff = {"kind": "input", **result}
+            workbench.sync_download_tasks()
+            if ids:
+                try:
+                    workbench.start("download", task_ids=ids)
+                except Exception:
+                    self.last_input_result["message"] = "已加入下载待处理，尚未执行；请刷新状态后预览继续。"
+                    workbench.log(self.last_input_result["message"])
+                    raise
+            else:
+                workbench.log(self.last_input_result["message"])
+            return ids
+
     async def create_tasks(
         self,
         content: str,
@@ -350,7 +411,8 @@ class GuiBackend:
 
         ids = await self._enqueue_links(content, "manual", index)
         if not ids:
-            self.add_log(_("提取小红书作品链接失败"), "warning")
+            message = self.last_input_result["message"] if self.workbench and self.last_input_result else _("提取小红书作品链接失败")
+            self.add_log(message, "info" if self.workbench and self.last_input_result and self.last_input_result.get("note_ids") else "warning")
         return [self.tasks[i].as_dict() for i in ids]
 
     async def create_script_task(
@@ -358,6 +420,8 @@ class GuiBackend:
         data: dict,
         index: list | tuple | None,
     ) -> dict[str, Any] | None:
+        if self.workbench:
+            raise ValueError("一体化模式请从共享链接池提交任务；外部脚本接口保留在旧入口。")
         if not self.task_queue:
             return None
         task_id = uuid4().hex
@@ -380,7 +444,8 @@ class GuiBackend:
             try:
                 task = self.tasks.get(task_id)
                 if task and task.state != "cancelled":
-                    await self._process_task(task)
+                    async with self.download_lock:
+                        await self._process_task(task)
             finally:
                 self.task_queue.task_done()
 
@@ -415,14 +480,27 @@ class GuiBackend:
                     task_id=task.task_id,
                     result_callback=capture_statistics,
                 )
-            if statistics.get("success", 0):
+            if statistics.get("fail", 0):
+                task.state = "failed"
+            elif statistics.get("success", 0):
                 task.state = "success"
             elif statistics.get("skip", 0):
                 task.state = "skipped"
             else:
                 task.state = "failed"
+            outcomes = statistics.get("outcomes") or []
+            task.reason = str(outcomes[-1].get("reason") or "") if outcomes and task.state != "failed" else ""
+            task.reason = task.reason or {"skipped": "skip_unknown", "success": "download_completed_unverified", "failed": "download_failed"}.get(task.state, task.state)
+            task.evidence = {"files": [{"path": item["path"], "bytes": item["completed_bytes"]}
+                                      for item in self.files.values() if item.get("task_id") == task.task_id
+                                      and item.get("state") == "completed" and item.get("path")]}
             if self.xhs.manager.download_record:
                 self.history_revision += 1
+        except AccessRestricted as error:
+            task.state = 'failed'
+            self.add_log(str(error), 'warning')
+            if self.workbench:
+                raise
         except CancelledError:
             task.state = "cancelled"
             self.cancel_task_files(task.task_id)
@@ -450,6 +528,7 @@ class GuiBackend:
                 "completed_bytes": event.get("completed_bytes", 0),
                 "total_bytes": event.get("total_bytes"),
                 "state": event.get("state", "downloading"),
+                "path": event.get("path"),
             }
         )
 
@@ -463,6 +542,8 @@ class GuiBackend:
     async def cancel_task(self, task_id: str) -> bool:
         """只允许取消尚未开始的 pending 任务，processing 任务不会被中断。"""
 
+        if self.workbench:
+            return self.workbench.cancel_download(task_id)
         task = self.tasks.get(task_id)
         if not task or task.state != "pending":
             return False
@@ -476,6 +557,8 @@ class GuiBackend:
         removed = [
             task_id for task_id, task in self.tasks.items() if task.state in finished
         ]
+        if self.workbench and self.workbench.store:
+            self.workbench.store.dismiss_downloads(removed)
         for task_id in removed:
             self.tasks.pop(task_id, None)
         for file_id, item in list(self.files.items()):
@@ -486,6 +569,10 @@ class GuiBackend:
     async def start_monitor(self) -> dict[str, Any]:
         """清空剪贴板后启动监听；监听创建的任务与手动任务共用同一队列。"""
 
+        if self.workbench:
+            raise ValueError("一体化模式请使用链接池；剪贴板监听仍可在旧版界面使用。")
+        if self.collection.busy or self.collection.command_lock.locked():
+            raise ValueError("请先暂停采集，再启动剪贴板监听。")
         if self.monitor_task and not self.monitor_task.done():
             return self.monitor
         await asyncio.to_thread(copy, "")
@@ -542,6 +629,8 @@ class GuiBackend:
             "all",
             "processing",
             "pending",
+            "paused",
+            "interrupted",
             "success",
             "failed",
             "skipped",
@@ -636,8 +725,9 @@ class GuiBackend:
         """记录用户已同意免责声明，并在首次同意后启动下载器运行时。"""
 
         if not self.settings["disclaimer_accepted"]:
-            self.settings["disclaimer_accepted"] = True
-            self.settings_manager.update(self.settings)
+            updated = {**self.settings, 'disclaimer_accepted': True}
+            self.settings_manager.update(updated)
+            self.settings = updated
         await self._start_runtime()
         return {"accepted": True}
 
@@ -683,8 +773,24 @@ class GuiBackend:
         return payload
 
     async def save_settings(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Reload settings under the same owner lock as scoped workbench commands."""
+
+        if self.workbench:
+            if self.workbench.closing:
+                return {"ok": False, "error": "正在安全关闭，请等待收尾"}
+            if self.workbench.lock.locked():
+                return {"ok": False, "error": "另一个操作正在处理，请等待解析或导出完成后再保存设置"}
+            async with self.workbench.lock:
+                return await self._save_settings(data)
+        return await self._save_settings(data)
+
+    async def _save_settings(self, data: dict[str, Any]) -> dict[str, Any]:
         """保存配置并重建下载器，使 Manager 处理后的新配置立即生效。"""
 
+        if self.workbench and self.workbench.busy:
+            return {"ok": False, "error": "请先安全暂停工作台任务，再修改设置"}
+        if self.collection.busy or self.collection.command_lock.locked():
+            return {"ok": False, "error": "请先暂停采集并等待收尾，再修改程序设置"}
         if any(task.state == "processing" for task in self.tasks.values()):
             return {"ok": False, "error": _("请等待正在处理的任务结束后再保存配置")}
         if self.monitor_task and not self.monitor_task.done():
@@ -692,7 +798,7 @@ class GuiBackend:
         # 仅接收 Settings.default 中定义的字段，避免前端额外数据进入配置。
         updated = dict(self.settings)
         updated.update(
-            {key: value for key, value in data.items() if key in Settings.default}
+            {key: value for key, value in data.items() if key in Settings.default and key != 'disclaimer_accepted'}
         )
         # 英文字段名称可能包含空格，GUI 以数组提交；旧配置字符串仍按项目格式读取。
         configured_name_format = updated.get("name_format") or ""
@@ -762,6 +868,43 @@ class GuiBackend:
 
         return await asyncio.to_thread(open_path, self.xhs.manager.folder.resolve())
 
+    async def _collection_media(self, note, url):
+        async with self.download_lock:
+            self.collection.runner.checkpoint()
+            if not self.xhs:
+                raise RuntimeError("下载器尚未初始化")
+            result = await self.xhs.process_collected_note(note, url, media=True)
+            return result["media"]
+
+    async def workspace_command(self, action, payload=None):
+        if not self.workbench:
+            raise ValueError("请使用 WORKBENCH 入口打开一体化界面。")
+        return await self.workbench.command(action, payload)
+
+    async def collection_command(self, action, payload=None):
+        if self.workbench:
+            return {"ok": False, "error": "一体化模式请使用顶部链接池与评论采集标签。"}
+        if not self.settings.get("disclaimer_accepted"):
+            return {"ok": False, "error": "请先完成程序的首次使用确认。"}
+        if self.monitor.get("active") and action in {"create", "start", "search"}:
+            return {"ok": False, "error": "请先关闭剪贴板监听，再进行采集。"}
+        if action == "open_folder":
+            path = self.collection.selected
+            if not path or not path.is_dir():
+                return {"ok": False, "error": "请先创建或打开一个批次。"}
+            def reveal():
+                if sys.platform == "win32":
+                    from os import startfile
+                    startfile(str(path))
+                else:
+                    Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)], stdout=DEVNULL, stderr=DEVNULL)
+            try:
+                await asyncio.to_thread(reveal)
+                return {"ok": True}
+            except OSError:
+                return {"ok": False, "error": "无法打开目录，请检查系统文件管理器。"}
+        return await self.collection.command(action, payload)
+
     async def snapshot(self) -> dict[str, Any]:
         """生成前端轮询所需的完整只读状态快照。"""
 
@@ -770,7 +913,10 @@ class GuiBackend:
         return {
             "disclaimer_accepted": self.settings["disclaimer_accepted"],
             "tasks": tasks,
+            "collection": None if self.workbench else self.collection.snapshot(),
             "files": list(self.files.values()),
+            "input_result": self.last_input_result,
+            "workbench": self.workbench.summary() if self.workbench else None,
             "history_enabled": history_enabled,
             "history_revision": self.history_revision,
             "logs": list(self.logs),
@@ -805,6 +951,12 @@ class GuiApi:
         """获取一次前端状态快照。"""
 
         return self._backend.call(self._backend.snapshot())
+
+    def workspace_command(self, action: str, payload: dict | None = None) -> dict:
+        return self._backend.call(self._backend.workspace_command(action, payload), timeout=60)
+
+    def collection_command(self, action: str, payload: dict | None = None) -> dict:
+        return self._backend.call(self._backend.collection_command(action, payload), timeout=60)
 
     def paste_content(self) -> str:
         """读取剪贴板文本。"""

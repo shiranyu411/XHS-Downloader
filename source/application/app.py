@@ -74,6 +74,7 @@ def new_statistics(total: int = 0) -> SimpleNamespace:
         success=0,
         fail=0,
         skip=0,
+        outcomes=[],
     )
 
 
@@ -148,7 +149,7 @@ class XHS:
         timeout=10,
         chunk=1024 * 1024,
         max_retry=5,
-        avg_delay: float | int = 6.0,
+        avg_delay: float | int = 60.0,
         record_data=False,
         image_format="JPEG",
         image_download=True,
@@ -275,8 +276,11 @@ class XHS:
             )
             if not result:
                 count.skip += 1
+                disabled = (container["作品类型"] == _("视频") and not self.manager.video_download and not self.manager.video_cover_download) or (container["作品类型"] in {_("图文"), _("图集")} and not self.manager.image_download)
+                count.outcomes.append({"note_id": i, "reason": "categories_disabled" if disabled else "no_new_files"})
             elif all(result):
                 count.success += 1
+                count.outcomes.append({"note_id": i, "reason": "download_completed"})
                 await self.__add_record(
                     i,
                 )
@@ -352,6 +356,7 @@ class XHS:
                     "success": statistics.success,
                     "fail": statistics.fail,
                     "skip": statistics.skip,
+                    "outcomes": statistics.outcomes,
                 }
             )
         return result
@@ -474,6 +479,8 @@ class XHS:
         msg = _("作品 {0} 存在下载记录，跳过处理").format(id_)
         self.logging(msg)
         count.skip += 1
+        if hasattr(count, "outcomes"):
+            count.outcomes.append({"note_id": id_, "reason": "existing_download_record"})
         return msg
 
     def _extract_data(
@@ -619,9 +626,31 @@ class XHS:
                     "success": count.success,
                     "fail": count.fail,
                     "skip": count.skip,
+                    "outcomes": getattr(count, "outcomes", []),
                 }
             )
         return result
+
+    async def process_collected_note(self, note: dict, url: str, media: bool = False):
+        """Compatibility adapter using verified files, independent of download history."""
+        from ..collection.store import Store, encode
+        from ..collection.media import MediaCollector
+        id_ = self.extract_link_id(url)
+        if note.get("noteId") != id_:
+            raise ValueError("collected note ID mismatch")
+        if not media:
+            return {"media": "disabled"}
+        store = Store(self.manager.folder / "collection")
+        try:
+            store.enqueue([url], {"mode": "media_adapter"})
+            attempt = store.begin(id_)
+            store.save(attempt, id_, "note_object", encode(note))
+            collector = MediaCollector(store, downloader=self.downloader)
+            state = await collector(note, url)
+            store.finish(attempt, {"body": "saved", "media": state, "comments": "not_requested", "reason": "media_verified"})
+            return {"media": state, "archive": str(store.root)}
+        finally:
+            store.close()
 
     async def process_script_task(self, **kwargs):
         if self.script_task_handler:
@@ -897,7 +926,7 @@ class XHS:
         mcp = FastMCP(
             "XHS-Downloader",
             instructions=dedent("""
-                本服务器提供两个 MCP 接口，分别用于获取小红书作品信息数据和下载小红书作品文件，二者互不依赖，可独立调用。
+                完整采集使用 collect_keyword 或 collect_posts，随后查询 get_collection_status、resume_collection、export_collection。后端自动管理分页与媒体。原 get_detail_data、download_detail 兼容保留。
                 
                 支持的作品链接格式：
                 - https://www.xiaohongshu.com/explore/...
@@ -1042,12 +1071,15 @@ class XHS:
                 case _:
                     raise ValueError
 
-        await mcp.run_async(
-            transport=transport,
-            host=host,
-            port=port,
-            log_level=log_level,
-        )
+        from ..collection.service import CollectionService
+        from ..collection.mcp import register_tools
+        from ..module.static import ROOT
+        collection = CollectionService(ROOT)
+        register_tools(mcp, collection)
+        try:
+            await mcp.run_async(transport=transport, host=host, port=port, log_level=log_level)
+        finally:
+            await collection.close()
 
     async def deal_detail_mcp(
         self,

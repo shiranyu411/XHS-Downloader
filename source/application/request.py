@@ -1,8 +1,10 @@
+from asyncio import Lock
 from typing import TYPE_CHECKING
 
 from curl_cffi.requests import get
 from curl_cffi.requests.exceptions import RequestException
 
+from ..module.access import AccessRestricted, refusal_reason
 from ..module import ERROR, logging, retry, sleep_time
 from ..translation import _
 
@@ -24,6 +26,9 @@ class Html:
         self.timeout = manager.timeout
         self.proxy = manager.proxy
         self.impersonate = manager.impersonate
+        self.access_restriction = None
+        self.on_restriction = None
+        self.request_lock = Lock()
 
     @retry
     async def request_url(
@@ -34,6 +39,17 @@ class Html:
         proxy: str | None = None,
         **kwargs,
     ) -> str:
+        # All callers of this downloader (including MCP/API) share one queue.
+        # Retry attempts enter it again, so network failures cannot bypass pacing.
+        async with self.request_lock:
+            if self.access_restriction:
+                raise AccessRestricted(self.access_restriction)
+            await sleep_time(self.manager.avg_delay)
+            return await self._request_url(url, content, cookie, proxy, **kwargs)
+
+    async def _request_url(self, url, content, cookie, proxy, **kwargs) -> str:
+        if self.access_restriction:
+            raise AccessRestricted(self.access_restriction)
         if not url.startswith("http"):
             url = f"https://{url}"
         headers = self.manager.get_headers(url)
@@ -53,7 +69,13 @@ class Html:
                     proxy=proxy,
                     **kwargs,
                 )
-            await sleep_time(self.manager.avg_delay)
+            reason = refusal_reason(response.status_code, response.text, response.url)
+            if reason:
+                self.access_restriction = reason
+                if self.on_restriction:
+                    self.on_restriction(reason)
+                # This exception is deliberately not a RequestException: @retry must stop.
+                raise AccessRestricted(reason)
             response.raise_for_status()
             return response.text if content else str(response.url)
         except RequestException as error:

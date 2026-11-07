@@ -121,7 +121,7 @@ class Setting(Screen):
             ),
             Input(
                 str(self.data["avg_delay"]),
-                placeholder="6.0",
+                placeholder="60.0",
                 type="number",
                 id="avg_delay",
             ),

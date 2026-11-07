@@ -3,13 +3,10 @@
 import sys
 from pathlib import Path
 
-import webview
-
-from ..module import PROJECT, ROOT
-from .backend import GuiApi, GuiBackend
+from ..module import ROOT
 
 # GUI 静态资源与 Python 桥接代码分离，统一从项目 static 目录加载。
-INDEX_PATH = ROOT.joinpath("static", "GUI", "index.html")
+INDEX_PATH = ROOT.joinpath("static", "GUI", "collector.html")
 
 
 def get_index_path() -> Path:
@@ -35,32 +32,9 @@ def get_icon_path(platform_name: str | None = None) -> Path:
 
 
 def launch() -> None:
-    """创建并启动静态 GUI 窗口；窗口关闭后再释放后台下载器。"""
-
-    # 先创建窗口，再异步启动后端，让启动加载层尽早显示。
-    backend = GuiBackend()
-    index_url = get_index_path().as_uri()
-    icon_path = get_icon_path()
-    api = GuiApi(backend)
-    # 1280x720 为桌面端默认及最小尺寸，前端样式负责更窄窗口的响应式布局。
-    window = webview.create_window(
-        PROJECT,
-        index_url,
-        width=1280,
-        height=720,
-        min_size=(1280, 720),
-        resizable=True,
-        text_select=True,
-        js_api=api,
-    )
-    api._bind_window(window)
-    backend.start(wait=False)
-    try:
-        webview.start(
-            icon=str(icon_path),
-        )
-    finally:
-        backend.stop()
+    """Open the complete-collection UI; legacy Python download APIs stay available."""
+    from .collector import launch as launch_collection
+    launch_collection()
 
 
 def main() -> None:

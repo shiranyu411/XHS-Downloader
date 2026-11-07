@@ -45,6 +45,8 @@ FILE_SIGNATURES: tuple[
     ],
     ...,
 ] = (
+    (0, b'GIF87a', 'gif'),
+    (0, b'GIF89a', 'gif'),
     # 分别为偏移量(字节)、十六进制签名、后缀
     # 参考：https://en.wikipedia.org/wiki/List_of_file_signatures
     # 参考：https://www.garykessler.net/library/file_sigs.html
@@ -67,7 +69,7 @@ FILE_SIGNATURES_LENGTH = max(
     offset + len(signature) for offset, signature, _ in FILE_SIGNATURES
 )
 
-MAX_WORKERS: int = 4
+MAX_WORKERS: int = 1
 
 if __name__ == "__main__":
     print(__VERSION__)

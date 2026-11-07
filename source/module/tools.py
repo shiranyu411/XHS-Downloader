@@ -74,7 +74,7 @@ def compare_versions(
 
 
 def get_wait_time(
-    avg_delay: float | int = 6.0,
+    avg_delay: float | int = 60.0,
     sigma: float = 0.6,
 ) -> float:
     mu = log(avg_delay) - (sigma**2 / 2)
@@ -84,5 +84,5 @@ def get_wait_time(
     return max(min_delay, min(max_delay, delay))
 
 
-async def sleep_time(avg_delay: float | int = 6.0):
+async def sleep_time(avg_delay: float | int = 60.0):
     await sleep(get_wait_time(avg_delay))

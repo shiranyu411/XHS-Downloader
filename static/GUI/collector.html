@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>小红书采集</title>
+  <link rel="stylesheet" href="/assets/collector.css">
+  <script src="/assets/collector.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/">小红书采集<span>本地资料库</span></a>
+    <div class="header-actions"><button id="login" class="quiet">打开浏览器登录</button><button id="settings-open" class="quiet">设置</button></div>
+  </header>
+  <main>
+    <section class="composer" aria-labelledby="input-title">
+      <div class="intro"><span class="eyebrow">从一个关键词开始</span><h1 id="input-title">把帖子和讨论，<br>一起保存下来。</h1><p>正文、图片、视频与两级评论<br>自动保存，随时离线查看。</p></div>
+      <form id="collect-form"><label for="target">关键词或帖子链接</label><textarea id="target" rows="4" placeholder="露营装备&#10;咖啡手冲&#10;&#10;也可以粘贴一个或多个完整帖子链接" required></textarea>
+        <div class="form-bottom"><span>每行一个关键词，可一次采集多个。</span><button id="start" class="primary" type="submit">开始采集 <span aria-hidden="true">→</span></button></div>
+      </form>
+    </section>
+    <section class="collection" aria-labelledby="collection-title">
+      <div class="section-heading"><div><span class="eyebrow">已保存到本机</span><h2 id="collection-title">我的资料</h2></div>
+        <div class="collection-actions"><label class="sr-only" for="batch">选择采集资料</label><select id="batch"><option value="">尚无采集记录</option></select><button id="export" disabled>导出资料</button></div>
+      </div>
+      <div id="notice" role="status" aria-live="polite" hidden></div>
+      <div id="export-result" class="coverage" hidden><span>已导出 CSV 表格、媒体文件与采集摘要。</span><button id="open-export">打开导出文件夹</button><button id="copy-export">复制路径</button></div>
+      <div id="progress-panel" hidden>
+        <div class="run-status"><div><span id="phase-dot" class="dot"></span><strong id="run-message">等待开始</strong><p id="current-note"></p></div><div class="run-actions"><button id="pause" hidden>暂停</button><button id="resume" hidden>继续采集</button></div></div>
+        <div class="metrics" aria-label="采集进度">
+          <div><strong id="discovered">0</strong><span>已发现帖子</span></div><div><strong id="completed">0</strong><span>完整保存</span></div><div><strong id="saved-media">0</strong><span>媒体文件</span></div><div><strong id="primary-count">0</strong><span>一级评论</span></div><div><strong id="reply-count">0</strong><span>二级回复</span></div>
+        </div>
+        <div id="coverage" class="coverage"></div>
+      </div>
+      <div class="library">
+        <div class="post-list"><div class="list-heading"><strong>帖子</strong><label class="sr-only" for="filter">筛选帖子</label><input id="filter" type="search" placeholder="查找帖子 ID 或状态"></div><div id="posts"><div class="empty-list">采集的帖子会出现在这里</div></div></div>
+        <article id="detail" class="detail"><div class="empty-detail"><div class="paper-mark" aria-hidden="true">文<span>图</span></div><h3>你的第一份完整资料</h3><p>在上方输入关键词或链接。<br>采集后，选择一篇帖子查看正文、媒体和评论。</p></div></article>
+      </div>
+      <p id="archive-path" class="archive-path"></p>
+    </section>
+  </main>
+  <dialog id="settings"><form method="dialog"><div class="dialog-heading"><h2>采集设置</h2><button aria-label="关闭设置">关闭</button></div></form><label for="cdp">专用浏览器连接地址</label><input id="cdp" value="http://127.0.0.1:9223"><p>仅在连接已有的调试浏览器时修改。首次使用，点击“打开浏览器登录”。</p><label for="archive-input">打开已有采集目录</label><div class="path-input"><input id="archive-input" placeholder="采集目录的完整路径"><button id="open-archive">打开</button></div><p>原始数据和已保存媒体保留在各自的采集目录。</p></dialog>
+</body>
+</html>

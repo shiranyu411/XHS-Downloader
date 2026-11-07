@@ -1,0 +1,20 @@
+# Send only build inputs; never include local profiles, data, credentials or Git history.
+**
+!Dockerfile
+!requirements.txt
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!main.py
+!source/
+!source/**
+!static/
+!static/**
+!locale/
+!locale/**
+**/__pycache__/
+**/*.pyc
+**/*.key
+**/*.pem
+**/.env
+**/.env.*
+**/.DS_Store
